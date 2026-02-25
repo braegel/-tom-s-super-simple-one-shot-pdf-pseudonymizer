@@ -1,11 +1,20 @@
 """
 AI Engine – Multi-provider abstraction for PII entity detection.
 Supports OpenAI (ChatGPT), Anthropic (Claude) and Google (Gemini).
+
+Handles large texts by splitting into chunks that fit within AI token limits
+and merging results, ensuring consistent variable assignment across chunks.
 """
 
 import json
 import re
 from typing import Dict, List, Tuple, Optional
+
+# Approximate character limit per chunk.  Most models handle ~120k chars
+# comfortably; we stay well below to leave room for the system prompt and
+# response.  Overlapping avoids splitting an entity at a boundary.
+CHUNK_SIZE = 60_000
+CHUNK_OVERLAP = 2_000
 
 # ---------------------------------------------------------------------------
 # Prompt that instructs the AI to find all PII entities
@@ -133,16 +142,62 @@ PROVIDERS = {
 }
 
 
-def detect_entities(provider: str, api_key: str, text: str) -> List[Dict[str, str]]:
+def _split_text(text: str) -> List[str]:
+    """Split *text* into overlapping chunks that fit within AI token limits."""
+    if len(text) <= CHUNK_SIZE:
+        return [text]
+    chunks: List[str] = []
+    start = 0
+    while start < len(text):
+        end = start + CHUNK_SIZE
+        chunks.append(text[start:end])
+        start = end - CHUNK_OVERLAP
+    return chunks
+
+
+def _deduplicate_entities(all_entities: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Remove duplicate entities (same text + category)."""
+    seen = set()
+    unique: List[Dict[str, str]] = []
+    for ent in all_entities:
+        key = (ent["text"], ent["category"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(ent)
+    return unique
+
+
+def detect_entities(
+    provider: str,
+    api_key: str,
+    text: str,
+    progress_callback=None,
+) -> List[Dict[str, str]]:
     """
     Detect PII entities using the chosen AI provider.
+
+    Automatically splits large texts into chunks and merges results.
+    *progress_callback(int)* is called with 0-100 percentage.
 
     Returns a list of dicts: [{"text": "...", "category": "..."}, ...]
     """
     func = PROVIDERS.get(provider)
     if func is None:
         raise ValueError(f"Unknown provider: {provider}")
-    return func(api_key, text)
+
+    chunks = _split_text(text)
+    all_entities: List[Dict[str, str]] = []
+
+    for i, chunk in enumerate(chunks):
+        if progress_callback:
+            progress_callback(int((i / len(chunks)) * 100))
+        chunk_entities = func(api_key, chunk)
+        all_entities.extend(chunk_entities)
+
+    if progress_callback:
+        progress_callback(100)
+
+    return _deduplicate_entities(all_entities)
 
 
 def assign_variables(entities: List[Dict[str, str]]) -> Dict[str, Tuple[str, str]]:

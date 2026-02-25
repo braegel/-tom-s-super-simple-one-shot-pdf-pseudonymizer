@@ -42,8 +42,14 @@ from PyQt6.QtGui import (
     QAction,
 )
 
-from ai_engine import detect_entities, assign_variables
-from pdf_processor import extract_text, redact_pdf, get_page_count
+try:
+    from ai_engine import detect_entities, assign_variables
+    from pdf_processor import extract_text, redact_pdf, get_page_count
+except ImportError as _imp_err:
+    # Will be handled at startup with a friendly message
+    _import_error = _imp_err
+else:
+    _import_error = None
 
 
 # ---------------------------------------------------------------------------
@@ -260,10 +266,18 @@ class AnonymizeWorker(QThread):
             self.progress.emit(5)
             text = extract_text(self.pdf_path)
 
-            # Step 2 – AI entity detection
+            # Step 2 – AI entity detection (with chunking for large texts)
             self.status.emit("KI analysiert den Text auf personenbezogene Daten …")
-            self.progress.emit(15)
-            entities = detect_entities(self.provider, self.api_key, text)
+            self.progress.emit(10)
+
+            def _ai_progress(pct):
+                # Map 0-100 of AI progress to 10-40 of overall progress
+                self.progress.emit(10 + int(pct * 0.30))
+
+            entities = detect_entities(
+                self.provider, self.api_key, text,
+                progress_callback=_ai_progress,
+            )
 
             if not entities:
                 self.status.emit("Keine personenbezogenen Daten gefunden.")
@@ -276,7 +290,7 @@ class AnonymizeWorker(QThread):
 
             # Step 3 – assign variables
             self.status.emit(f"{len(entities)} Entitäten erkannt – Variablen werden zugewiesen …")
-            self.progress.emit(40)
+            self.progress.emit(42)
             entity_map = assign_variables(entities)
 
             # Step 4 – redact PDF
@@ -607,9 +621,49 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Fehler bei der Verarbeitung.")
 
 
+def _check_dependencies() -> str | None:
+    """Return an error message if critical packages are missing, else None."""
+    missing = []
+    try:
+        import fitz
+    except ImportError:
+        missing.append("PyMuPDF  (pip install PyMuPDF)")
+    # AI packages are optional – only the selected provider needs to be present
+    # but we check that at least one is available.
+    has_any_ai = False
+    for mod in ("openai", "anthropic", "google.generativeai"):
+        try:
+            __import__(mod)
+            has_any_ai = True
+            break
+        except ImportError:
+            pass
+    if not has_any_ai:
+        missing.append(
+            "Mindestens ein KI-Paket: openai, anthropic oder google-generativeai\n"
+            "  → pip install openai anthropic google-generativeai"
+        )
+    if _import_error is not None and not missing:
+        missing.append(str(_import_error))
+    if missing:
+        return "Fehlende Abhängigkeiten:\n\n" + "\n".join(f"• {m}" for m in missing)
+    return None
+
+
 def run_app():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # Check dependencies early
+    dep_err = _check_dependencies()
+    if dep_err:
+        QMessageBox.critical(
+            None,
+            "Fehlende Pakete",
+            f"{dep_err}\n\nBitte installieren Sie die fehlenden Pakete:\n"
+            f"  pip install -r requirements.txt",
+        )
+        sys.exit(1)
 
     # Dark palette base
     palette = QPalette()
