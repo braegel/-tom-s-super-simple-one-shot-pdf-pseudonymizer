@@ -18,11 +18,9 @@ MODE_PSEUDO_VARS = "pseudo_vars"        # black bars with hex variable labels
 MODE_PSEUDO_NATURAL = "pseudo_natural"  # natural-sounding replacement values
 
 # ---------------------------------------------------------------------------
-# Intensity levels  (how aggressively the AI searches for PII)
+# Intensity  (always maximum – no user choice)
 # ---------------------------------------------------------------------------
 
-INTENSITY_LIGHT = "light"       # conservative – only clear, unambiguous PII
-INTENSITY_MEDIUM = "medium"     # balanced – standard detection
 INTENSITY_HARD = "hard"         # aggressive – in doubt, always redact
 
 # ---------------------------------------------------------------------------
@@ -129,13 +127,6 @@ Antworte NUR mit dem JSON-Objekt. Denke daran: Jeden Namen finden, im Zweifel sc
 # ---------------------------------------------------------------------------
 
 _INTENSITY_PREFIX = {
-    INTENSITY_LIGHT: (
-        "WICHTIGER HINWEIS ZUR INTENSITÄT: Arbeite KONSERVATIV. "
-        "Schwärze nur Daten, die EINDEUTIG und ZWEIFELSFREI personenbezogen sind. "
-        "Wenn du dir unsicher bist, ÜBERSPRINGE die Entität. "
-        "Weniger ist hier mehr – nur klare Treffer.\n\n"
-    ),
-    INTENSITY_MEDIUM: "",  # default behaviour, no modifier
     INTENSITY_HARD: (
         "WICHTIGER HINWEIS ZUR INTENSITÄT: Arbeite MAXIMAL GRÜNDLICH. "
         "Im Zweifel IMMER schwärzen. Jede noch so kleine Möglichkeit, "

@@ -36,7 +36,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='PDFAnonymizer',
+    name='toms_super_simple_pdf_anonymizer',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -53,5 +53,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='PDFAnonymizer',
+    name='toms_super_simple_pdf_anonymizer',
 )

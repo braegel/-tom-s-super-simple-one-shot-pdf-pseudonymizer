@@ -64,7 +64,7 @@ try:
     from ai_engine import (
         detect_entities, assign_variables, generate_natural_replacements,
         MODE_ANONYMIZE, MODE_PSEUDO_VARS, MODE_PSEUDO_NATURAL,
-        INTENSITY_LIGHT, INTENSITY_MEDIUM, INTENSITY_HARD,
+        INTENSITY_HARD,
         SCOPE_NAMES_ONLY, SCOPE_ALL,
     )
     from pdf_processor import (
@@ -76,8 +76,6 @@ except ImportError as _imp_err:
     MODE_ANONYMIZE = "anonymize"
     MODE_PSEUDO_VARS = "pseudo_vars"
     MODE_PSEUDO_NATURAL = "pseudo_natural"
-    INTENSITY_LIGHT = "light"
-    INTENSITY_MEDIUM = "medium"
     INTENSITY_HARD = "hard"
     SCOPE_NAMES_ONLY = "names_only"
     SCOPE_ALL = "all"
@@ -90,8 +88,8 @@ else:
 # Settings persistence
 # ---------------------------------------------------------------------------
 
-SETTINGS_ORG = "PDFAnonymizer"
-SETTINGS_APP = "PDFAnonymizer"
+SETTINGS_ORG = "toms_super_simple_pdf_anonymizer"
+SETTINGS_APP = "toms_super_simple_pdf_anonymizer"
 
 
 def _settings() -> QSettings:
@@ -138,16 +136,6 @@ def load_mode() -> str:
     return s.value("processing_mode", MODE_PSEUDO_VARS)
 
 
-def save_intensity(intensity: str):
-    s = _settings()
-    s.setValue("intensity", intensity)
-
-
-def load_intensity() -> str:
-    s = _settings()
-    return s.value("intensity", INTENSITY_MEDIUM)
-
-
 def save_scope(scope: str):
     s = _settings()
     s.setValue("scope", scope)
@@ -162,30 +150,31 @@ def load_scope() -> str:
 # Colour palette
 # ---------------------------------------------------------------------------
 
-BLUE            = "#5BA4CF"
-BLUE_MID        = "#4A93BE"
-BLUE_DARK       = "#3A82AD"
-BLUE_GLOW       = "#6CB5E0"
+# Friendlier, warmer colour palette
+BLUE            = "#7EB8DA"
+BLUE_MID        = "#6EAAD0"
+BLUE_DARK       = "#5A9AC4"
+BLUE_GLOW       = "#90C8EA"
 
-ORANGE          = "#FF9F43"
-ORANGE_MID      = "#F08C30"
-ORANGE_DARK     = "#E07A20"
+ORANGE          = "#FFB347"
+ORANGE_MID      = "#FFA033"
+ORANGE_DARK     = "#F08C20"
 
-BG_DARK         = "#0d1117"
-BG_CARD         = "#161b22"
-BG_SURFACE      = "#21262d"
-BG_HOVER        = "#30363d"
+BG_DARK         = "#1A1D23"
+BG_CARD         = "#22262E"
+BG_SURFACE      = "#2A2F38"
+BG_HOVER        = "#363C47"
 
-BORDER          = "#30363d"
-BORDER_FOCUS    = "#5BA4CF"
+BORDER          = "#3A4050"
+BORDER_FOCUS    = "#7EB8DA"
 
-TEXT_PRIMARY    = "#f0f6fc"
-TEXT_SECONDARY  = "#8b949e"
-TEXT_MUTED      = "#6e7681"
+TEXT_PRIMARY    = "#F5F5F0"
+TEXT_SECONDARY  = "#A0A8B4"
+TEXT_MUTED      = "#7A8290"
 
-SUCCESS         = "#3fb950"
-ERROR           = "#f85149"
-WARNING         = "#d29922"
+SUCCESS         = "#6FCF7F"
+ERROR           = "#F07070"
+WARNING         = "#E0B040"
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +641,6 @@ class AnonymizeWorker(QThread):
         provider: str,
         api_key: str,
         mode: str = MODE_PSEUDO_VARS,
-        intensity: str = INTENSITY_MEDIUM,
         scope: str = SCOPE_ALL,
     ):
         super().__init__()
@@ -661,7 +649,6 @@ class AnonymizeWorker(QThread):
         self.provider = provider
         self.api_key = api_key
         self.mode = mode
-        self.intensity = intensity
         self.scope = scope
         self._temp_pdf: str | None = None
 
@@ -696,7 +683,7 @@ class AnonymizeWorker(QThread):
             entities = detect_entities(
                 self.provider, self.api_key, text,
                 progress_callback=_ai_progress,
-                intensity=self.intensity,
+                intensity=INTENSITY_HARD,
                 scope=self.scope,
             )
 
@@ -743,6 +730,7 @@ class AnonymizeWorker(QThread):
             redact_pdf(
                 pdf_path, self.output_path, entity_map,
                 mode=self.mode, progress_callback=_pdf_progress,
+                api_key=self.api_key,
             )
 
             self._cleanup_temp()
@@ -880,12 +868,6 @@ _MODE_OPTIONS = [
     ),
 ]
 
-_INTENSITY_OPTIONS = [
-    (INTENSITY_LIGHT, "Leicht", "Nur eindeutige PII"),
-    (INTENSITY_MEDIUM, "Mittel", "Standard-Erkennung"),
-    (INTENSITY_HARD, "Gründlich", "Maximal, im Zweifel schwärzen"),
-]
-
 _SCOPE_OPTIONS = [
     (SCOPE_NAMES_ONLY, "Nur Namen", "Vor- und Nachnamen"),
     (SCOPE_ALL, "Alles Relevante", "Alle Kategorien"),
@@ -945,7 +927,7 @@ class _ChipGroup(QFrame):
 
 
 class ModeSelectionDialog(QDialog):
-    """Dialog shown after file selection to choose mode, intensity, and scope."""
+    """Dialog shown after file selection to choose mode and scope."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -953,7 +935,6 @@ class ModeSelectionDialog(QDialog):
         self.setFixedWidth(500)
         self.setStyleSheet(STYLESHEET)
         self.selected_mode: str | None = None
-        self.selected_intensity: str = load_intensity()
         self.selected_scope: str = load_scope()
 
         layout = QVBoxLayout(self)
@@ -967,22 +948,6 @@ class ModeSelectionDialog(QDialog):
         )
         layout.addWidget(header)
         layout.addSpacing(2)
-
-        # -- Intensity section --
-        int_label = QLabel("Intensität")
-        int_label.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 11px; font-weight: 600; "
-            f"text-transform: uppercase; letter-spacing: 1px;"
-        )
-        layout.addWidget(int_label)
-
-        self._intensity_chips = _ChipGroup(
-            _INTENSITY_OPTIONS, self.selected_intensity
-        )
-        self._intensity_chips.selection_changed.connect(self._on_intensity)
-        layout.addWidget(self._intensity_chips)
-
-        layout.addSpacing(4)
 
         # -- Scope section --
         scope_label = QLabel("Umfang")
@@ -1033,7 +998,7 @@ class ModeSelectionDialog(QDialog):
                 }}
                 QFrame:hover {{
                     border-color: {ORANGE};
-                    background-color: rgba(255, 159, 67, 0.05);
+                    background-color: rgba(255, 179, 71, 0.06);
                 }}
             """)
 
@@ -1070,10 +1035,6 @@ class ModeSelectionDialog(QDialog):
         btn_layout.addWidget(cancel_btn)
         layout.addLayout(btn_layout)
 
-    def _on_intensity(self, value: str):
-        self.selected_intensity = value
-        save_intensity(value)
-
     def _on_scope(self, value: str):
         self.selected_scope = value
         save_scope(value)
@@ -1091,7 +1052,7 @@ class ModeSelectionDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("TOM's SIMPLE PDF-ANONYMIZER")
+        self.setWindowTitle("Tom's Super Simple PDF Anonymizer")
         self.setMinimumSize(640, 560)
         self.resize(720, 620)
         self.setStyleSheet(STYLESHEET)
@@ -1116,10 +1077,10 @@ class MainWindow(QMainWindow):
 
         title_layout = QHBoxLayout()
         title_layout.setSpacing(0)
-        t1 = QLabel("TOM's SIMPLE ")
+        t1 = QLabel("Tom's Super Simple ")
         t1.setObjectName("titleLabel")
         title_layout.addWidget(t1)
-        t2 = QLabel("PDF-ANONYMIZER")
+        t2 = QLabel("PDF Anonymizer")
         t2.setObjectName("titleAccent")
         title_layout.addWidget(t2)
         title_layout.addStretch()
@@ -1293,7 +1254,6 @@ class MainWindow(QMainWindow):
             self.drop_zone.set_state(DropZone.STATE_IDLE)
             return
         mode = mode_dlg.selected_mode
-        intensity = mode_dlg.selected_intensity
         scope = mode_dlg.selected_scope
         self._selected_mode = mode
 
@@ -1320,7 +1280,7 @@ class MainWindow(QMainWindow):
         # Launch worker
         self.worker = AnonymizeWorker(
             self.current_pdf, output_path, provider, api_key,
-            mode=mode, intensity=intensity, scope=scope,
+            mode=mode, scope=scope,
         )
         self.worker.progress.connect(self.drop_zone.set_progress)
         self.worker.step.connect(self.drop_zone.set_step)

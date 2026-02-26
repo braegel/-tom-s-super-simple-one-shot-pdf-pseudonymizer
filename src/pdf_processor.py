@@ -797,12 +797,123 @@ def _detect_and_redact_signatures(page):
     _redact_bottom_zone_scan(page)
 
 
+# ---------------------------------------------------------------------------
+# GPT-5.2 Vision-based signature detection  (catch-all for missed handwriting)
+# ---------------------------------------------------------------------------
+
+_VISION_SIG_PROMPT = """Analysiere dieses Dokumentbild SEHR GENAU auf Unterschriften, Handschrift, Paraphen, Initialen, handschriftliche Kringel und Stempel.
+
+Suche BESONDERS:
+- Handschriftliche Unterschriften (Signaturen) überall auf der Seite, besonders im unteren Bereich
+- Handschriftlich geschriebene Wörter oder Buchstaben
+- Paraphen, Initialen, Kürzel
+- Stempel (rund, oval, rechteckig)
+- Handschriftliche Anmerkungen, Notizen, Randbemerkungen
+- Jegliche Kringel, Schnörkel oder handschriftliche Markierungen
+
+Für JEDE gefundene handschriftliche Stelle, gib die UNGEFÄHRE Position als Bounding-Box in Prozent der Seitenbreite/-höhe an.
+
+Antworte NUR mit JSON:
+{
+  "signatures": [
+    {"x_pct": 10, "y_pct": 85, "w_pct": 30, "h_pct": 8, "type": "unterschrift"},
+    {"x_pct": 60, "y_pct": 90, "w_pct": 25, "h_pct": 6, "type": "paraphe"}
+  ]
+}
+
+Wenn KEINE Handschrift gefunden wird: {"signatures": []}
+Sei lieber zu gründlich als zu vorsichtig – im Zweifel IMMER melden."""
+
+
+def _detect_signatures_with_vision(page, api_key: str) -> List[fitz.Rect]:
+    """Use GPT-5.2 vision to detect handwritten signatures on *page*.
+
+    Renders the page as a JPEG, sends it to the vision model, and
+    returns a list of fitz.Rect bounding boxes for detected signatures.
+    """
+    import base64
+    import json as _json
+
+    page_rect = page.rect
+
+    # Render page at 150 DPI (good balance of quality and size)
+    scale = 150.0 / 72.0
+    mat = fitz.Matrix(scale, scale)
+    try:
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+    except Exception:
+        return []
+
+    # Convert to JPEG bytes
+    img_bytes = pix.tobytes("jpeg")
+    b64_image = base64.b64encode(img_bytes).decode("utf-8")
+
+    # Call GPT-5.2 vision
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-5.2",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": _VISION_SIG_PROMPT},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{b64_image}",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                },
+            ],
+            temperature=0.0,
+            max_completion_tokens=2048,
+        )
+    except Exception:
+        return []
+
+    # Parse response
+    try:
+        text = response.choices[0].message.content.strip()
+        import re
+        fence = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+        if fence:
+            text = fence.group(1).strip()
+        data = _json.loads(text)
+        sigs = data.get("signatures", [])
+    except Exception:
+        return []
+
+    # Convert percentage-based bboxes to page coordinates
+    rects: List[fitz.Rect] = []
+    pw = page_rect.width
+    ph = page_rect.height
+    for sig in sigs:
+        try:
+            x = page_rect.x0 + sig["x_pct"] / 100.0 * pw
+            y = page_rect.y0 + sig["y_pct"] / 100.0 * ph
+            w = sig["w_pct"] / 100.0 * pw
+            h = sig["h_pct"] / 100.0 * ph
+            rect = fitz.Rect(x, y, x + w, y + h)
+            # Sanity check: not too small, not the entire page
+            if rect.width > 5 and rect.height > 3 and rect.width < pw * 0.9:
+                rects.append(rect)
+        except (KeyError, TypeError):
+            continue
+
+    return rects
+
+
 def redact_pdf(
     pdf_path: str,
     output_path: str,
     entity_map: Dict[str, Tuple[str, str]],
     mode: str = "pseudo_vars",
     progress_callback=None,
+    api_key: Optional[str] = None,
 ) -> str:
     """
     Create a redacted copy of *pdf_path* at *output_path*.
@@ -843,6 +954,13 @@ def redact_pdf(
 
         # Redact signatures, handwriting, ink annotations, etc.
         _detect_and_redact_signatures(page)
+
+        # GPT-5.2 vision-based signature detection (catch-all)
+        if api_key:
+            vision_rects = _detect_signatures_with_vision(page, api_key)
+            for rect in vision_rects:
+                expanded = _expand_rect(rect, page.rect, _REDACT_MARGIN)
+                page.add_redact_annot(expanded, text="", fill=BLACK)
 
         # Apply all redactions for this page at once (removes underlying text)
         page.apply_redactions()
