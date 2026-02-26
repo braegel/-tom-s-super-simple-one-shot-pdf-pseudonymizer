@@ -9,6 +9,14 @@ import json
 import re
 from typing import Dict, List, Tuple, Optional
 
+# ---------------------------------------------------------------------------
+# Processing modes  (used by gui.py and pdf_processor.py too)
+# ---------------------------------------------------------------------------
+
+MODE_ANONYMIZE = "anonymize"            # solid black bars, no labels
+MODE_PSEUDO_VARS = "pseudo_vars"        # black bars with hex variable labels
+MODE_PSEUDO_NATURAL = "pseudo_natural"  # natural-sounding replacement values
+
 # Approximate character limit per chunk.  Most models handle ~120k chars
 # comfortably; we stay well below to leave room for the system prompt and
 # response.  Overlapping avoids splitting an entity at a boundary.
@@ -98,6 +106,45 @@ TEXT:
 
 Antworte NUR mit dem JSON-Objekt. Denke daran: Jeden Namen finden, im Zweifel schwärzen."""
 
+# ---------------------------------------------------------------------------
+# Prompt for natural replacement generation  (MODE_PSEUDO_NATURAL)
+# ---------------------------------------------------------------------------
+
+REPLACEMENT_SYSTEM_PROMPT = """Du bist ein Experte für Datenpseudonymisierung. Deine Aufgabe: Ersetze personenbezogene Daten durch NATÜRLICH KLINGENDE, REALISTISCHE Fake-Daten.
+
+REGELN:
+- Vornamen → andere realistische Vornamen (gleiche Sprache/Herkunft wenn erkennbar)
+- Nachnamen → andere realistische Nachnamen (gleiche Sprache/Herkunft wenn erkennbar)
+- Straßen → andere realistische Straßennamen
+- Hausnummern → andere Hausnummern
+- Städte → andere Städte im gleichen Land
+- PLZ → passende PLZ zur neuen Stadt
+- Länder → gleich beibehalten
+- Kontonummern/IBANs → andere gültig aussehende Nummern gleicher Länge
+- E-Mails → neue E-Mail basierend auf dem neuen Namen
+- Telefon → andere Nummer gleichen Formats
+- Unternehmen → andere realistische Firmennamen gleicher Art
+- Geldbeträge → andere Beträge in ähnlicher Größenordnung
+- Geburtsdaten → andere realistische Daten
+- Steuernummern/SVN/Ausweisnummern → andere Nummern gleichen Formats
+- Aktenzeichen → andere Aktenzeichen gleichen Formats
+- Krypto-Adressen → andere Adressen gleichen Formats
+
+WICHTIG:
+- KONSISTENZ: Wenn "Max" als Vorname ersetzt wird durch "Thomas", dann ÜBERALL "Thomas".
+- Zusammengehörige Daten müssen zueinander passen (E-Mail zum neuen Namen etc.).
+- ÄHNLICHE LÄNGE: Die Ersetzung soll möglichst ähnlich viele Zeichen haben wie das Original.
+- GLEICHES FORMAT: Die Ersetzung muss das gleiche Format haben (z.B. gleiche Anzahl Ziffern bei Nummern).
+- Antworte NUR mit einem JSON-Objekt."""
+
+REPLACEMENT_USER_TEMPLATE = """Erstelle für jede der folgenden Entitäten einen natürlich klingenden Ersatzwert.
+
+Antworte NUR mit einem JSON-Objekt der Form:
+{{"replacements": {{"original": "ersatz", ...}}}}
+
+Entitäten:
+{entities_json}"""
+
 
 def _parse_ai_response(response_text: str) -> List[Dict[str, str]]:
     """Parse the JSON response from the AI, handling markdown fences."""
@@ -133,12 +180,54 @@ def detect_entities_openai(api_key: str, text: str) -> List[Dict[str, str]]:
     return _parse_ai_response(response.choices[0].message.content)
 
 
+def generate_natural_replacements_openai(
+    api_key: str, entities: List[Dict[str, str]]
+) -> Dict[str, str]:
+    """Use OpenAI GPT-5.2 to generate natural-sounding replacement values."""
+    # Build concise list (deduplicated, skip signatures)
+    items = []
+    seen: set = set()
+    for ent in entities:
+        if ent["text"] not in seen and ent["category"] != "UNTERSCHRIFT":
+            items.append({"text": ent["text"], "category": ent["category"]})
+            seen.add(ent["text"])
+
+    if not items:
+        return {}
+
+    entities_json = json.dumps(items, ensure_ascii=False, indent=2)
+
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": REPLACEMENT_SYSTEM_PROMPT},
+            {"role": "user", "content": REPLACEMENT_USER_TEMPLATE.format(
+                entities_json=entities_json,
+            )},
+        ],
+        temperature=0.7,
+        max_completion_tokens=16384,
+    )
+    text = response.choices[0].message.content.strip()
+    fence = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    data = json.loads(text)
+    return data.get("replacements", {})
+
+
 # ---------------------------------------------------------------------------
 # Unified interface
 # ---------------------------------------------------------------------------
 
 PROVIDERS = {
     "openai": detect_entities_openai,
+}
+
+REPLACEMENT_PROVIDERS = {
+    "openai": generate_natural_replacements_openai,
 }
 
 
@@ -200,24 +289,62 @@ def detect_entities(
     return _deduplicate_entities(all_entities)
 
 
-def assign_variables(entities: List[Dict[str, str]]) -> Dict[str, Tuple[str, str]]:
-    """
-    Assign anonymisation variables to detected entities.
+def generate_natural_replacements(
+    provider: str,
+    api_key: str,
+    entities: List[Dict[str, str]],
+) -> Dict[str, str]:
+    """Generate natural-sounding replacement values using the chosen AI provider.
 
-    Returns a dict mapping original text -> (variable_id, category).
-    Same text always gets the same variable.  Variables use hexadecimal
-    counting starting at A (i.e. A, B, C, D, E, F, 10, 11, …).
-    Signature/handwriting entities are redacted without a variable label.
+    Returns a dict mapping original text -> replacement text.
+    """
+    func = REPLACEMENT_PROVIDERS.get(provider)
+    if func is None:
+        raise ValueError(f"Unknown provider: {provider}")
+    return func(api_key, entities)
+
+
+def assign_variables(
+    entities: List[Dict[str, str]],
+    mode: str = MODE_PSEUDO_VARS,
+    replacements: Optional[Dict[str, str]] = None,
+) -> Dict[str, Tuple[str, str]]:
+    """
+    Assign labels to detected entities based on the processing mode.
+
+    Modes:
+      ``MODE_ANONYMIZE``       – all labels empty (solid black redaction)
+      ``MODE_PSEUDO_VARS``     – hexadecimal variable IDs  (A, B, C, …)
+      ``MODE_PSEUDO_NATURAL``  – natural-sounding replacement text
+
+    Returns a dict mapping original text -> (label, category).
+    Same text always gets the same label.
     """
     mapping: Dict[str, Tuple[str, str]] = {}
     counter = 0xA  # Start at hex A
+
     for ent in entities:
         txt = ent["text"]
-        if txt not in mapping:
-            if ent["category"] == "UNTERSCHRIFT":
-                mapping[txt] = ("", ent["category"])
-            else:
-                var_id = f"{counter:X}"
-                mapping[txt] = (var_id, ent["category"])
-                counter += 1
+        if txt in mapping:
+            continue
+
+        cat = ent["category"]
+
+        # Signatures are always redacted as solid black (no label)
+        if cat == "UNTERSCHRIFT":
+            mapping[txt] = ("", cat)
+            continue
+
+        if mode == MODE_ANONYMIZE:
+            mapping[txt] = ("", cat)
+        elif mode == MODE_PSEUDO_NATURAL and replacements:
+            replacement = replacements.get(txt, f"{counter:X}")
+            mapping[txt] = (replacement, cat)
+            counter += 1
+        else:
+            # Default: hex variable IDs
+            var_id = f"{counter:X}"
+            mapping[txt] = (var_id, cat)
+            counter += 1
+
     return mapping

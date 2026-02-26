@@ -61,10 +61,16 @@ from PyQt6.QtGui import (
 )
 
 try:
-    from ai_engine import detect_entities, assign_variables
+    from ai_engine import (
+        detect_entities, assign_variables, generate_natural_replacements,
+        MODE_ANONYMIZE, MODE_PSEUDO_VARS, MODE_PSEUDO_NATURAL,
+    )
     from pdf_processor import extract_text, redact_pdf, get_page_count
 except ImportError as _imp_err:
     _import_error = _imp_err
+    MODE_ANONYMIZE = "anonymize"
+    MODE_PSEUDO_VARS = "pseudo_vars"
+    MODE_PSEUDO_NATURAL = "pseudo_natural"
 else:
     _import_error = None
 
@@ -109,6 +115,16 @@ def save_output_dir(path: str):
 def load_output_dir() -> str:
     s = _settings()
     return s.value("output_dir", "")
+
+
+def save_mode(mode: str):
+    s = _settings()
+    s.setValue("processing_mode", mode)
+
+
+def load_mode() -> str:
+    s = _settings()
+    return s.value("processing_mode", MODE_PSEUDO_VARS)
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +388,25 @@ QStatusBar {{
     padding: 2px 8px;
 }}
 
+/* ── Mode selector ────────────────────────────────────── */
+QComboBox#modeSelector {{
+    background-color: {BG_SURFACE};
+    color: {TURQUOISE};
+    border: 1px solid rgba(0, 206, 209, 0.25);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    min-width: 280px;
+}}
+QComboBox#modeSelector:hover {{
+    border-color: {TURQUOISE};
+    background-color: rgba(0, 206, 209, 0.06);
+}}
+QComboBox#modeSelector:focus {{
+    border-color: {TURQUOISE};
+}}
+
 /* ── Drop zone ─────────────────────────────────────────── */
 QFrame#dropZone {{
     background-color: {BG_CARD};
@@ -591,12 +626,13 @@ class AnonymizeWorker(QThread):
     finished_ok = pyqtSignal(str)        # output path
     finished_err = pyqtSignal(str)       # error message
 
-    def __init__(self, pdf_path: str, output_path: str, provider: str, api_key: str):
+    def __init__(self, pdf_path: str, output_path: str, provider: str, api_key: str, mode: str = MODE_PSEUDO_VARS):
         super().__init__()
         self.pdf_path = pdf_path
         self.output_path = output_path
         self.provider = provider
         self.api_key = api_key
+        self.mode = mode
 
     def run(self):
         try:
@@ -630,20 +666,38 @@ class AnonymizeWorker(QThread):
 
             self.entity_count.emit(len(entities))
 
-            # Step 3 – assign variables
-            self.step.emit("Schritt 3/4  –  Variablen zuweisen")
-            self.status.emit(f"{len(entities)} Entitäten erkannt …")
-            self.progress.emit(42)
-            entity_map = assign_variables(entities)
+            # Step 3 – assign labels (variables / natural replacements)
+            replacements = None
+            if self.mode == MODE_PSEUDO_NATURAL:
+                self.step.emit("Schritt 3/4  –  Natürliche Ersetzungen generieren")
+                self.status.emit(f"{len(entities)} Entitäten erkannt – generiere Ersetzungen …")
+                self.progress.emit(42)
+                replacements = generate_natural_replacements(
+                    self.provider, self.api_key, entities,
+                )
+            else:
+                self.step.emit("Schritt 3/4  –  Variablen zuweisen")
+                self.status.emit(f"{len(entities)} Entitäten erkannt …")
+                self.progress.emit(42)
+
+            entity_map = assign_variables(entities, mode=self.mode, replacements=replacements)
 
             # Step 4 – redact PDF
-            self.step.emit("Schritt 4/4  –  PDF anonymisieren")
+            mode_label = {
+                MODE_ANONYMIZE: "anonymisieren",
+                MODE_PSEUDO_VARS: "pseudonymisieren",
+                MODE_PSEUDO_NATURAL: "pseudonymisieren",
+            }.get(self.mode, "verarbeiten")
+            self.step.emit(f"Schritt 4/4  –  PDF {mode_label}")
             self.status.emit("PDF wird geschrieben …")
 
             def _pdf_progress(pct):
                 self.progress.emit(45 + int(pct * 0.50))
 
-            redact_pdf(self.pdf_path, self.output_path, entity_map, progress_callback=_pdf_progress)
+            redact_pdf(
+                self.pdf_path, self.output_path, entity_map,
+                mode=self.mode, progress_callback=_pdf_progress,
+            )
 
             self.progress.emit(100)
             self.finished_ok.emit(self.output_path)
@@ -808,7 +862,32 @@ class MainWindow(QMainWindow):
         subtitle.setObjectName("subtitleLabel")
         subtitle.setWordWrap(True)
         main_layout.addWidget(subtitle)
-        main_layout.addSpacing(16)
+        main_layout.addSpacing(12)
+
+        # ── Mode selector ──
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(10)
+        mode_label = QLabel("Modus:")
+        mode_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; font-weight: 600;")
+        mode_row.addWidget(mode_label)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("modeSelector")
+        self.mode_combo.addItem("Anonymisieren  (nur Schwärzen)", MODE_ANONYMIZE)
+        self.mode_combo.addItem("Pseudonymisieren  (Variablen)", MODE_PSEUDO_VARS)
+        self.mode_combo.addItem("Pseudonymisieren  (Natürlich)", MODE_PSEUDO_NATURAL)
+        # Restore saved mode
+        saved_mode = load_mode()
+        for i in range(self.mode_combo.count()):
+            if self.mode_combo.itemData(i) == saved_mode:
+                self.mode_combo.setCurrentIndex(i)
+                break
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_row.addWidget(self.mode_combo)
+        mode_row.addStretch()
+
+        main_layout.addLayout(mode_row)
+        main_layout.addSpacing(12)
 
         # ── Drop zone ──
         self.drop_zone = DropZone()
@@ -868,9 +947,17 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("Bitte zuerst einen API-Key in den Einstellungen hinterlegen")
 
+    def _on_mode_changed(self):
+        mode = self.mode_combo.currentData()
+        save_mode(mode)
+
+    def _current_mode(self) -> str:
+        return self.mode_combo.currentData() or MODE_PSEUDO_VARS
+
     def _set_processing(self, active: bool):
         """Lock/unlock UI during processing."""
         self.select_btn.setEnabled(not active)
+        self.mode_combo.setEnabled(not active)
 
     def _open_output_folder(self):
         if self._last_output:
@@ -930,9 +1017,11 @@ class MainWindow(QMainWindow):
                 return
 
         # Ask for output location
+        mode = self._current_mode()
         default_dir = load_output_dir() or os.path.dirname(self.current_pdf)
         base = os.path.splitext(os.path.basename(self.current_pdf))[0]
-        default_name = f"{base}_anonymisiert.pdf"
+        suffix = "anonymisiert" if mode == MODE_ANONYMIZE else "pseudonymisiert"
+        default_name = f"{base}_{suffix}.pdf"
         output_path, _ = QFileDialog.getSaveFileName(
             self,
             "Anonymisiertes PDF speichern unter",
@@ -951,7 +1040,7 @@ class MainWindow(QMainWindow):
         self._entity_count = 0
 
         # Launch worker
-        self.worker = AnonymizeWorker(self.current_pdf, output_path, provider, api_key)
+        self.worker = AnonymizeWorker(self.current_pdf, output_path, provider, api_key, mode=mode)
         self.worker.progress.connect(self.drop_zone.set_progress)
         self.worker.step.connect(self.drop_zone.set_step)
         self.worker.status.connect(lambda s: self.statusBar().showMessage(s))
@@ -969,7 +1058,9 @@ class MainWindow(QMainWindow):
 
         out_name = os.path.basename(output_path)
         if self._entity_count > 0:
-            detail = f"{self._entity_count} Entitäten anonymisiert  →  {out_name}"
+            mode = self._current_mode()
+            action = "anonymisiert" if mode == MODE_ANONYMIZE else "pseudonymisiert"
+            detail = f"{self._entity_count} Entitäten {action}  →  {out_name}"
         else:
             detail = f"Keine PII-Daten gefunden  →  Kopie erstellt als {out_name}"
 

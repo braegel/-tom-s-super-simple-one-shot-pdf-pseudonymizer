@@ -24,6 +24,7 @@ import os
 BLACK = (0.0, 0.0, 0.0)
 DARK_GRAY = (0.25, 0.25, 0.25)
 WHITE = (1, 1, 1)
+LIGHT_BG = (0.95, 0.95, 0.93)  # subtle warm-gray for natural-mode replacements
 
 # Category labels for the summary page
 CATEGORY_LABELS = {
@@ -65,10 +66,16 @@ def extract_text(pdf_path: str) -> str:
     return full
 
 
-def _add_redaction(page, rect: fitz.Rect, label: str):
-    """Add a redaction annotation that fills *rect* with black and shows *label*."""
-    if not label:
-        # Signature/handwriting: solid black box, no text
+def _add_redaction(page, rect: fitz.Rect, label: str, mode: str = "pseudo_vars"):
+    """Add a redaction annotation to *rect*.
+
+    Rendering depends on *mode*:
+      ``"anonymize"``       – solid black box, no text
+      ``"pseudo_vars"``     – black box with white hex label
+      ``"pseudo_natural"``  – subtle background with readable replacement text
+    """
+    if mode == "anonymize" or not label:
+        # Pure anonymization or signatures: solid black, no text
         page.add_redact_annot(rect, text="", fill=BLACK)
         return
 
@@ -85,15 +92,28 @@ def _add_redaction(page, rect: fitz.Rect, label: str):
         font_size -= 0.5
         text_w = fitz.get_text_length(label, fontname="helv", fontsize=font_size)
 
-    page.add_redact_annot(
-        rect,
-        text=label,
-        fontname="helv",
-        fontsize=font_size,
-        align=fitz.TEXT_ALIGN_CENTER,
-        fill=BLACK,
-        text_color=WHITE,
-    )
+    if mode == "pseudo_natural":
+        # Natural pseudonymization: light background with dark text
+        page.add_redact_annot(
+            rect,
+            text=label,
+            fontname="helv",
+            fontsize=font_size,
+            align=fitz.TEXT_ALIGN_CENTER,
+            fill=LIGHT_BG,
+            text_color=DARK_GRAY,
+        )
+    else:
+        # Variable pseudonymization: black box with white label
+        page.add_redact_annot(
+            rect,
+            text=label,
+            fontname="helv",
+            fontsize=font_size,
+            align=fitz.TEXT_ALIGN_CENTER,
+            fill=BLACK,
+            text_color=WHITE,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -412,16 +432,14 @@ def redact_pdf(
     pdf_path: str,
     output_path: str,
     entity_map: Dict[str, Tuple[str, str]],
+    mode: str = "pseudo_vars",
     progress_callback=None,
 ) -> str:
     """
     Create a redacted copy of *pdf_path* at *output_path*.
 
-    For every occurrence of an entity key the text is permanently redacted
-    (underlying text removed) and replaced with a black box showing the
-    assigned variable label.
-
-    *entity_map*: {original_text: (variable_id, category)}
+    *mode* controls how redactions are rendered (see ``_add_redaction``).
+    *entity_map*: ``{original_text: (label, category)}``.
 
     Returns the output path.
     """
@@ -436,13 +454,13 @@ def redact_pdf(
             progress_callback(int((page_idx / total_pages) * 100))
 
         for entity_text in sorted_entities:
-            var_id, _category = entity_map[entity_text]
+            label, _category = entity_map[entity_text]
 
             # Search for all occurrences on this page
             text_instances = page.search_for(entity_text)
 
             for inst in text_instances:
-                _add_redaction(page, inst, var_id)
+                _add_redaction(page, inst, label, mode)
 
         # Redact signatures, handwriting, ink annotations, etc.
         _detect_and_redact_signatures(page)
@@ -450,8 +468,8 @@ def redact_pdf(
         # Apply all redactions for this page at once (removes underlying text)
         page.apply_redactions()
 
-    # -- Append summary page listing all variable assignments --
-    _append_summary_page(doc, entity_map)
+    # -- Append summary page --
+    _append_summary_page(doc, entity_map, mode)
 
     if progress_callback:
         progress_callback(100)
@@ -461,32 +479,42 @@ def redact_pdf(
     return output_path
 
 
-def _append_summary_page(doc: fitz.Document, entity_map: Dict[str, Tuple[str, str]]):
-    """Append a page at the end of *doc* listing all variable -> category mappings."""
-    # A4 page size
+def _append_summary_page(
+    doc: fitz.Document,
+    entity_map: Dict[str, Tuple[str, str]],
+    mode: str = "pseudo_vars",
+):
+    """Append a summary page at the end of *doc*.
+
+    Layout adapts to the processing mode:
+      ``"anonymize"``       – category count overview
+      ``"pseudo_vars"``     – variable -> category table
+      ``"pseudo_natural"``  – replacement -> category table
+    """
     page_w, page_h = 595.28, 841.89
     page = doc.new_page(width=page_w, height=page_h)
-
     margin = 50
     y = margin
 
-    # Title
+    # ── Title & subtitle ──
+    if mode == "anonymize":
+        title = "Anonymisierungs-Bericht"
+        subtitle = "Übersicht der geschwärzten Datenkategorien"
+    elif mode == "pseudo_natural":
+        title = "Pseudonymisierungs-Verzeichnis"
+        subtitle = "Zuordnung der Ersetzungen zu Kategorien"
+    else:
+        title = "Pseudonymisierungs-Verzeichnis"
+        subtitle = "Zuordnung der verwendeten Variablen zu Kategorien"
+
     page.insert_text(
-        fitz.Point(margin, y + 20),
-        "Anonymisierungs-Verzeichnis",
-        fontname="helv",
-        fontsize=18,
-        color=DARK_GRAY,
+        fitz.Point(margin, y + 20), title,
+        fontname="helv", fontsize=18, color=DARK_GRAY,
     )
     y += 45
-
-    # Subtitle
     page.insert_text(
-        fitz.Point(margin, y + 12),
-        "Zuordnung der verwendeten Variablen zu Kategorien",
-        fontname="helv",
-        fontsize=10,
-        color=(0.4, 0.4, 0.4),
+        fitz.Point(margin, y + 12), subtitle,
+        fontname="helv", fontsize=10, color=(0.4, 0.4, 0.4),
     )
     y += 30
 
@@ -497,74 +525,107 @@ def _append_summary_page(doc: fitz.Document, entity_map: Dict[str, Tuple[str, st
     shape.commit()
     y += 15
 
-    # Table header
-    col_var = margin
-    col_cat = margin + 80
-    col_note = margin + 240
+    # ── Mode: anonymize – just show category counts ──
+    if mode == "anonymize":
+        from collections import Counter
+        cat_counts: Counter = Counter()
+        for _txt, (label, category) in entity_map.items():
+            cat_counts[category] += 1
 
-    page.insert_text(fitz.Point(col_var, y + 10), "Variable", fontname="helv", fontsize=9, color=DARK_GRAY)
-    page.insert_text(fitz.Point(col_cat, y + 10), "Kategorie", fontname="helv", fontsize=9, color=DARK_GRAY)
-    page.insert_text(fitz.Point(col_note, y + 10), "Hinweis", fontname="helv", fontsize=9, color=DARK_GRAY)
-    y += 20
+        col_cat = margin
+        col_count = margin + 300
 
-    # Sorted by variable name
-    entries = sorted(entity_map.items(), key=lambda x: x[1][0])
+        page.insert_text(fitz.Point(col_cat, y + 10), "Kategorie", fontname="helv", fontsize=9, color=DARK_GRAY)
+        page.insert_text(fitz.Point(col_count, y + 10), "Anzahl", fontname="helv", fontsize=9, color=DARK_GRAY)
+        y += 20
 
-    for original_text, (var_id, category) in entries:
-        if not var_id:
-            continue  # Skip entries without variable (e.g. signatures)
+        for category, count in sorted(cat_counts.items()):
+            if y > page_h - margin - 40:
+                page = doc.new_page(width=page_w, height=page_h)
+                y = margin
+            cat_label = CATEGORY_LABELS.get(category, category)
+            page.insert_text(fitz.Point(col_cat, y + 10), cat_label, fontname="helv", fontsize=9, color=(0.2, 0.2, 0.2))
+            page.insert_text(fitz.Point(col_count, y + 10), str(count), fontname="helv", fontsize=9, color=(0.2, 0.2, 0.2))
+            y += 20
 
-        if y > page_h - margin - 20:
-            # New page if we run out of space
-            page = doc.new_page(width=page_w, height=page_h)
-            y = margin
-
-        cat_label = CATEGORY_LABELS.get(category, category)
-
-        # Draw a small black chip for the variable
-        var_w = fitz.get_text_length(var_id, fontname="helv", fontsize=9) + 8
-        chip_rect = fitz.Rect(col_var, y, col_var + var_w, y + 14)
-        shape = page.new_shape()
-        shape.draw_rect(chip_rect)
-        shape.finish(color=DARK_GRAY, fill=BLACK, width=0.3)
-        shape.commit()
-        page.insert_text(
-            fitz.Point(col_var + 4, y + 10),
-            var_id,
-            fontname="helv",
-            fontsize=9,
-            color=WHITE,
-        )
-
-        # Category
+        # Total
+        y += 5
+        total = sum(cat_counts.values())
         page.insert_text(
             fitz.Point(col_cat, y + 10),
-            cat_label,
-            fontname="helv",
-            fontsize=9,
-            color=(0.2, 0.2, 0.2),
+            f"Insgesamt {total} Entitäten anonymisiert",
+            fontname="helv", fontsize=10, color=DARK_GRAY,
         )
 
-        # Hint: show how many characters the original had (no cleartext!)
-        hint = f"{len(original_text)} Zeichen"
-        page.insert_text(
-            fitz.Point(col_note, y + 10),
-            hint,
-            fontname="helv",
-            fontsize=8,
-            color=(0.5, 0.5, 0.5),
-        )
+    # ── Mode: pseudo_vars / pseudo_natural – item table ──
+    else:
+        col_var = margin
+        col_cat = margin + 160 if mode == "pseudo_natural" else margin + 80
+        col_note = margin + 320 if mode == "pseudo_natural" else margin + 240
 
+        var_header = "Ersetzung" if mode == "pseudo_natural" else "Variable"
+        page.insert_text(fitz.Point(col_var, y + 10), var_header, fontname="helv", fontsize=9, color=DARK_GRAY)
+        page.insert_text(fitz.Point(col_cat, y + 10), "Kategorie", fontname="helv", fontsize=9, color=DARK_GRAY)
+        page.insert_text(fitz.Point(col_note, y + 10), "Hinweis", fontname="helv", fontsize=9, color=DARK_GRAY)
         y += 20
+
+        entries = sorted(entity_map.items(), key=lambda x: x[1][0])
+
+        for original_text, (label, category) in entries:
+            if not label:
+                continue  # Skip signatures (no label)
+
+            if y > page_h - margin - 20:
+                page = doc.new_page(width=page_w, height=page_h)
+                y = margin
+
+            cat_label = CATEGORY_LABELS.get(category, category)
+
+            if mode == "pseudo_natural":
+                # Natural mode: show replacement text in a subtle chip
+                disp = label if len(label) <= 35 else label[:32] + "..."
+                chip_w = fitz.get_text_length(disp, fontname="helv", fontsize=9) + 8
+                chip_rect = fitz.Rect(col_var, y, col_var + chip_w, y + 14)
+                shape = page.new_shape()
+                shape.draw_rect(chip_rect)
+                shape.finish(color=(0.8, 0.8, 0.78), fill=LIGHT_BG, width=0.3)
+                shape.commit()
+                page.insert_text(
+                    fitz.Point(col_var + 4, y + 10), disp,
+                    fontname="helv", fontsize=9, color=DARK_GRAY,
+                )
+            else:
+                # Variable mode: black chip with white text
+                chip_w = fitz.get_text_length(label, fontname="helv", fontsize=9) + 8
+                chip_rect = fitz.Rect(col_var, y, col_var + chip_w, y + 14)
+                shape = page.new_shape()
+                shape.draw_rect(chip_rect)
+                shape.finish(color=DARK_GRAY, fill=BLACK, width=0.3)
+                shape.commit()
+                page.insert_text(
+                    fitz.Point(col_var + 4, y + 10), label,
+                    fontname="helv", fontsize=9, color=WHITE,
+                )
+
+            # Category
+            page.insert_text(
+                fitz.Point(col_cat, y + 10), cat_label,
+                fontname="helv", fontsize=9, color=(0.2, 0.2, 0.2),
+            )
+
+            # Hint: character count of the original (no cleartext!)
+            hint = f"{len(original_text)} Zeichen"
+            page.insert_text(
+                fitz.Point(col_note, y + 10), hint,
+                fontname="helv", fontsize=8, color=(0.5, 0.5, 0.5),
+            )
+            y += 20
 
     # Footer
     y = page_h - margin
     page.insert_text(
-        fitz.Point(margin, y),
-        "Erstellt mit PDF Anonymizer",
-        fontname="helv",
-        fontsize=8,
-        color=(0.6, 0.6, 0.6),
+        fitz.Point(margin, y), "Erstellt mit PDF Anonymizer",
+        fontname="helv", fontsize=8, color=(0.6, 0.6, 0.6),
     )
 
 
