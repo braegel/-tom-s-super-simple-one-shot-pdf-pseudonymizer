@@ -2,6 +2,10 @@ name: Build Windows EXE
 
 on:
   push:
+    branches:
+      - main
+      - master
+      - "claude/**"
     tags:
       - "v*"
   workflow_dispatch:
@@ -41,15 +45,19 @@ jobs:
           name: PDFAnonymizer-Windows
           path: dist/PDFAnonymizer.exe
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create or update Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "PDF Anonymizer ${{ github.ref_name }}"
+          tag_name: latest
+          name: "PDF Anonymizer – Download"
           body: |
-            ## PDF Anonymizer ${{ github.ref_name }}
+            ## PDF Anonymizer
 
-            **Download:** `PDFAnonymizer.exe` unten herunterladen und starten.
+            **`PDFAnonymizer.exe` unten unter „Assets" herunterladen und starten.**
+
+            Dieser Release wird bei jedem Push automatisch aktualisiert.
+
+            ---
 
             ### Voraussetzungen
             - Windows 10/11
@@ -58,11 +66,15 @@ jobs:
 
             ### Erste Schritte
             1. `PDFAnonymizer.exe` starten
-            2. Einstellungen öffnen → API-Key hinterlegen
-            3. PDF per Drag & Drop ablegen → fertig!
+            2. ⚙ Einstellungen öffnen → API-Key hinterlegen
+            3. PDF per Drag & Drop ablegen → Speicherort wählen → fertig!
 
             ### Was wird anonymisiert?
-            Vornamen, Nachnamen, Adressen, Kontonummern/IBAN, E-Mail-Adressen, Telefonnummern, Krypto-Adressen, Unternehmensnamen, Grundstücksangaben, Geburtsdaten, Steuernummern und mehr.
+            Vornamen, Nachnamen, Adressen (Straße, Hausnummer, PLZ, Stadt), Kontonummern/IBAN, E-Mail-Adressen, Telefonnummern, Krypto-Adressen, Unternehmensnamen (GmbH, AG, Ltd, …), Grundstücksangaben, Geburtsdaten, Steuer- und Sozialversicherungsnummern, Ausweisnummern – in allen Sprachen.
+
+            Gleiche Entitäten erhalten immer dieselbe Variable (VBX01, VBX02, …).
+            Anonymisierte Stellen werden türkis überdeckt. Am Ende wird ein Variablen-Verzeichnis angehängt.
           files: dist/PDFAnonymizer.exe
           draft: false
           prerelease: false
+          make_latest: true
