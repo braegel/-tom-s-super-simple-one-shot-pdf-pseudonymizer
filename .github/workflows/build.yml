@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Windows & Mac
 
 on:
   push:
@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
 
     steps:
@@ -45,6 +45,53 @@ jobs:
           name: PDFAnonymizer-Windows
           path: dist/PDFAnonymizer.exe
 
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build app with PyInstaller
+        run: |
+          pyinstaller --noconfirm --clean --name PDFAnonymizer --windowed --onefile --add-data "src:src" src/main.py
+
+      - name: Create ZIP for distribution
+        run: |
+          cd dist && zip -r PDFAnonymizer-Mac.zip PDFAnonymizer
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFAnonymizer-Mac
+          path: dist/PDFAnonymizer-Mac.zip
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PDFAnonymizer-Windows
+          path: artifacts/
+
+      - name: Download Mac artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PDFAnonymizer-Mac
+          path: artifacts/
+
       - name: Create or update Release
         uses: softprops/action-gh-release@v2
         with:
@@ -53,28 +100,34 @@ jobs:
           body: |
             ## PDF Anonymizer
 
-            **`PDFAnonymizer.exe` unten unter „Assets" herunterladen und starten.**
+            **Downloads:**
+            - **Windows:** `PDFAnonymizer.exe` herunterladen und starten
+            - **Mac:** `PDFAnonymizer-Mac.zip` herunterladen, entpacken und starten
 
             Dieser Release wird bei jedem Push automatisch aktualisiert.
 
             ---
 
             ### Voraussetzungen
-            - Windows 10/11
+            - Windows 10/11 oder macOS 12+
             - Ein API-Key für OpenAI, Anthropic (Claude) oder Google Gemini
             - PDFs müssen Texterkennung (OCR) enthalten
 
             ### Erste Schritte
-            1. `PDFAnonymizer.exe` starten
-            2. ⚙ Einstellungen öffnen → API-Key hinterlegen
+            1. Programm starten
+            2. Einstellungen öffnen → API-Key hinterlegen
             3. PDF per Drag & Drop ablegen → Speicherort wählen → fertig!
 
             ### Was wird anonymisiert?
-            Vornamen, Nachnamen, Adressen (Straße, Hausnummer, PLZ, Stadt), Kontonummern/IBAN, E-Mail-Adressen, Telefonnummern, Krypto-Adressen, Unternehmensnamen (GmbH, AG, Ltd, …), Grundstücksangaben, Geburtsdaten, Steuer- und Sozialversicherungsnummern, Ausweisnummern – in allen Sprachen.
+            Vornamen, Nachnamen, Adressen, Kontonummern/IBAN, E-Mails, Telefonnummern, Krypto-Adressen, Firmennamen, Grundstücksangaben, Geburtsdaten, Steuer-/Sozialversicherungsnummern, Ausweisnummern, **Geldbeträge/Währungen**, **Unterschriften/Handschrift** – in allen Sprachen.
 
-            Gleiche Entitäten erhalten immer dieselbe Variable (VBX01, VBX02, …).
-            Anonymisierte Stellen werden türkis überdeckt. Am Ende wird ein Variablen-Verzeichnis angehängt.
-          files: dist/PDFAnonymizer.exe
+            Rechtliche Normen, Paragraphen (§) und Gesetzesverweise werden **nicht** anonymisiert.
+
+            Variablen: A, B, C, … F, 10, 11, … (Hexadezimal ab A).
+            Anonymisierte Stellen werden schwarz geschwärzt. Am Ende wird ein Variablen-Verzeichnis angehängt.
+          files: |
+            artifacts/PDFAnonymizer.exe
+            artifacts/PDFAnonymizer-Mac.zip
           draft: false
           prerelease: false
           make_latest: true

@@ -41,6 +41,8 @@ Du musst folgende Kategorien erkennen – in ALLEN Sprachen, die im Text vorkomm
 15. SOZIALVERSICHERUNG – Sozialversicherungsnummern
 16. STEUERNUMMER – Steuernummern, UID-Nummern
 17. AUSWEISNUMMER – Reisepass-, Personalausweis-, Führerscheinnummern
+18. GELDBETRAG – Geldbeträge und Währungsangaben (z.B. $100, 50€, 1.000 USD, 5.000,00 EUR, £200, CHF 500, ¥10000)
+19. UNTERSCHRIFT – Handschriftlich wirkende Texte, Unterschriften, Paraphen, Kürzel, Initialen
 
 WICHTIGE REGELN:
 - Gleiche Entitäten (z.B. derselbe Vorname "Max" an mehreren Stellen) sollen als EINE Entität behandelt werden.
@@ -48,6 +50,9 @@ WICHTIGE REGELN:
 - Gib die Entitäten EXAKT so zurück, wie sie im Text stehen (gleiche Schreibweise, Groß-/Kleinschreibung).
 - Erkenne Entitäten in ALLEN Sprachen (Deutsch, Englisch, Französisch, etc.).
 - Ignoriere allgemeine Begriffe die keine konkreten PII sind (z.B. "Straße" allein ohne Namen).
+- Achte BESONDERS auf Geldbeträge und Währungen: $, €, £, ¥, USD, EUR, GBP, CHF, JPY, BTC und alle anderen Währungen. Auch Beträge wie "1.000,00" oder "100.00" neben einem Währungszeichen erkennen.
+- NICHT anonymisieren: Rechtliche Normen, Paragraphen (§), Gesetzesverweise (z.B. "§ 123 BGB", "Art. 5 DSGVO", "§ 823 Abs. 1 BGB"), Standards und Normen (ISO, DIN, EN, ÖNORM), Rechtsformzusätze in Normverweisen. Diese sind KEINE personenbezogenen Daten.
+- Erkenne handschriftlich wirkende Texte, Unterschriften, Paraphen, Initialen und Kürzel als UNTERSCHRIFT. Auch unleserliche oder kurze Zeichenfolgen, die wie handschriftliche Notizen wirken.
 
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt im folgenden Format, ohne weitere Erklärung:
 
@@ -61,7 +66,9 @@ Antworte AUSSCHLIESSLICH mit einem JSON-Objekt im folgenden Format, ohne weitere
     {"text": "10115", "category": "PLZ"},
     {"text": "DE89370400440532013000", "category": "KONTONUMMER"},
     {"text": "max@example.com", "category": "EMAIL"},
-    {"text": "Muster GmbH", "category": "UNTERNEHMEN"}
+    {"text": "Muster GmbH", "category": "UNTERNEHMEN"},
+    {"text": "5.000,00 EUR", "category": "GELDBETRAG"},
+    {"text": "J.M.", "category": "UNTERSCHRIFT"}
   ]
 }"""
 
@@ -205,14 +212,19 @@ def assign_variables(entities: List[Dict[str, str]]) -> Dict[str, Tuple[str, str
     Assign anonymisation variables to detected entities.
 
     Returns a dict mapping original text -> (variable_id, category).
-    Same text always gets the same variable.  Variables look like VBX01, VBX02, …
+    Same text always gets the same variable.  Variables use hexadecimal
+    counting starting at A (i.e. A, B, C, D, E, F, 10, 11, …).
+    Signature/handwriting entities are redacted without a variable label.
     """
     mapping: Dict[str, Tuple[str, str]] = {}
-    counter = 1
+    counter = 0xA  # Start at hex A
     for ent in entities:
         txt = ent["text"]
         if txt not in mapping:
-            var_id = f"VBX{counter:02d}"
-            mapping[txt] = (var_id, ent["category"])
-            counter += 1
+            if ent["category"] == "UNTERSCHRIFT":
+                mapping[txt] = ("", ent["category"])
+            else:
+                var_id = f"{counter:X}"
+                mapping[txt] = (var_id, ent["category"])
+                counter += 1
     return mapping

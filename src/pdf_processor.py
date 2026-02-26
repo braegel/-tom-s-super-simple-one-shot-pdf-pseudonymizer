@@ -7,6 +7,7 @@ Key improvements:
   (not merely covered by a shape that could be lifted).
 - Sorts entities longest-first to avoid partial matches inside longer ones.
 - Appends a summary page listing all variable assignments.
+- Detects and redacts potential signature/handwriting images.
 """
 
 import fitz  # PyMuPDF
@@ -14,9 +15,9 @@ from typing import Dict, Tuple, List
 import os
 
 
-# Turquoise colour for redaction boxes  (R, G, B  0-1 float)
-TURQUOISE = (0.0, 0.808, 0.820)
-TURQUOISE_DARK = (0.0, 0.545, 0.545)
+# Black colour for redaction boxes  (R, G, B  0-1 float)
+BLACK = (0.0, 0.0, 0.0)
+DARK_GRAY = (0.25, 0.25, 0.25)
 WHITE = (1, 1, 1)
 
 # Category labels for the summary page
@@ -38,6 +39,8 @@ CATEGORY_LABELS = {
     "SOZIALVERSICHERUNG": "Sozialversicherungsnummer",
     "STEUERNUMMER": "Steuernummer",
     "AUSWEISNUMMER": "Ausweisnummer",
+    "GELDBETRAG": "Geldbetrag / Währung",
+    "UNTERSCHRIFT": "Unterschrift / Handschrift",
 }
 
 
@@ -58,7 +61,12 @@ def extract_text(pdf_path: str) -> str:
 
 
 def _add_redaction(page, rect: fitz.Rect, label: str):
-    """Add a redaction annotation that fills *rect* with turquoise and shows *label*."""
+    """Add a redaction annotation that fills *rect* with black and shows *label*."""
+    if not label:
+        # Signature/handwriting: solid black box, no text
+        page.add_redact_annot(rect, text="", fill=BLACK)
+        return
+
     # Calculate font size that fits the box
     box_w = rect.width
     box_h = rect.height
@@ -78,9 +86,33 @@ def _add_redaction(page, rect: fitz.Rect, label: str):
         fontname="helv",
         fontsize=font_size,
         align=fitz.TEXT_ALIGN_CENTER,
-        fill=TURQUOISE,
+        fill=BLACK,
         text_color=WHITE,
     )
+
+
+def _redact_signature_images(page):
+    """Detect and redact images that could be signatures or handwriting.
+
+    Heuristic: images in a typical signature size range are redacted.
+    Very small icons and full-page images are ignored.
+    """
+    try:
+        images = page.get_images(full=True)
+    except Exception:
+        return
+    for img_info in images:
+        xref = img_info[0]
+        try:
+            rects = page.get_image_rects(xref)
+        except Exception:
+            continue
+        for rect in rects:
+            w, h = rect.width, rect.height
+            area = w * h
+            # Heuristic: signature-sized images (not icons, not full-page)
+            if 40 < w < 600 and 10 < h < 250 and 500 < area < 80000:
+                page.add_redact_annot(rect, text="", fill=BLACK)
 
 
 def redact_pdf(
@@ -93,7 +125,7 @@ def redact_pdf(
     Create a redacted copy of *pdf_path* at *output_path*.
 
     For every occurrence of an entity key the text is permanently redacted
-    (underlying text removed) and replaced with a turquoise box showing the
+    (underlying text removed) and replaced with a black box showing the
     assigned variable label.
 
     *entity_map*: {original_text: (variable_id, category)}
@@ -119,6 +151,9 @@ def redact_pdf(
             for inst in text_instances:
                 _add_redaction(page, inst, var_id)
 
+        # Redact potential signature/handwriting images
+        _redact_signature_images(page)
+
         # Apply all redactions for this page at once (removes underlying text)
         page.apply_redactions()
 
@@ -134,7 +169,7 @@ def redact_pdf(
 
 
 def _append_summary_page(doc: fitz.Document, entity_map: Dict[str, Tuple[str, str]]):
-    """Append a page at the end of *doc* listing all variable → category mappings."""
+    """Append a page at the end of *doc* listing all variable -> category mappings."""
     # A4 page size
     page_w, page_h = 595.28, 841.89
     page = doc.new_page(width=page_w, height=page_h)
@@ -148,7 +183,7 @@ def _append_summary_page(doc: fitz.Document, entity_map: Dict[str, Tuple[str, st
         "Anonymisierungs-Verzeichnis",
         fontname="helv",
         fontsize=18,
-        color=TURQUOISE_DARK,
+        color=DARK_GRAY,
     )
     y += 45
 
@@ -165,7 +200,7 @@ def _append_summary_page(doc: fitz.Document, entity_map: Dict[str, Tuple[str, st
     # Horizontal rule
     shape = page.new_shape()
     shape.draw_line(fitz.Point(margin, y), fitz.Point(page_w - margin, y))
-    shape.finish(color=TURQUOISE, width=1.5)
+    shape.finish(color=DARK_GRAY, width=1.5)
     shape.commit()
     y += 15
 
@@ -174,15 +209,18 @@ def _append_summary_page(doc: fitz.Document, entity_map: Dict[str, Tuple[str, st
     col_cat = margin + 80
     col_note = margin + 240
 
-    page.insert_text(fitz.Point(col_var, y + 10), "Variable", fontname="helv", fontsize=9, color=TURQUOISE_DARK)
-    page.insert_text(fitz.Point(col_cat, y + 10), "Kategorie", fontname="helv", fontsize=9, color=TURQUOISE_DARK)
-    page.insert_text(fitz.Point(col_note, y + 10), "Hinweis", fontname="helv", fontsize=9, color=TURQUOISE_DARK)
+    page.insert_text(fitz.Point(col_var, y + 10), "Variable", fontname="helv", fontsize=9, color=DARK_GRAY)
+    page.insert_text(fitz.Point(col_cat, y + 10), "Kategorie", fontname="helv", fontsize=9, color=DARK_GRAY)
+    page.insert_text(fitz.Point(col_note, y + 10), "Hinweis", fontname="helv", fontsize=9, color=DARK_GRAY)
     y += 20
 
     # Sorted by variable name
     entries = sorted(entity_map.items(), key=lambda x: x[1][0])
 
     for original_text, (var_id, category) in entries:
+        if not var_id:
+            continue  # Skip entries without variable (e.g. signatures)
+
         if y > page_h - margin - 20:
             # New page if we run out of space
             page = doc.new_page(width=page_w, height=page_h)
@@ -190,12 +228,12 @@ def _append_summary_page(doc: fitz.Document, entity_map: Dict[str, Tuple[str, st
 
         cat_label = CATEGORY_LABELS.get(category, category)
 
-        # Draw a small turquoise chip for the variable
+        # Draw a small black chip for the variable
         var_w = fitz.get_text_length(var_id, fontname="helv", fontsize=9) + 8
         chip_rect = fitz.Rect(col_var, y, col_var + var_w, y + 14)
         shape = page.new_shape()
         shape.draw_rect(chip_rect)
-        shape.finish(color=TURQUOISE_DARK, fill=TURQUOISE, width=0.3)
+        shape.finish(color=DARK_GRAY, fill=BLACK, width=0.3)
         shape.commit()
         page.insert_text(
             fitz.Point(col_var + 4, y + 10),
