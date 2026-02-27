@@ -33,11 +33,7 @@ import tempfile
 # Pure black redaction boxes – clean, authoritative, no colour distractions.
 
 REDACT_BG       = (0.0, 0.0, 0.0)        # pure black fill
-REDACT_BG_LIGHT = (0.0, 0.0, 0.0)        # same for signatures/logos
 REDACT_FG       = (1.0, 1.0, 1.0)        # white label text
-REDACT_STROKE   = (0.18, 0.18, 0.18)     # very subtle dark border
-
-# No category accent colours – all redaction boxes are pure black.
 
 
 # ---------------------------------------------------------------------------
@@ -493,22 +489,22 @@ def _add_redaction(page, rect: fitz.Rect, label: str, mode: str = "pseudo_vars",
         page.add_redact_annot(rect, text="", fill=REDACT_BG)
         return (fitz.Rect(rect), "", 0, category)
 
-    # Target font size: slightly smaller than box height for breathing room
+    # Target font size: slightly smaller than box height for breathing room.
+    # Capped at 9pt for a clean, readable look that doesn't overpower.
     box_h = rect.height
-    font_size = min(box_h * 0.70, 10)
-    if font_size < 3.5:
-        font_size = 3.5
+    font_size = min(box_h * 0.68, 9)
+    if font_size < 4.0:
+        font_size = 4.0
 
     # Maximum width: original text rect + tiny allowance (4pt).
     # NEVER widen significantly – that would cover adjacent text.
     max_w = rect.width + 4
-    # 4pt padding (2pt left + 2pt right)
     padding = 4
 
     text_w = fitz.get_text_length(label, fontname="helv", fontsize=font_size)
 
-    # Strategy 1: shrink font until it fits
-    while text_w + padding > max_w and font_size > 3.5:
+    # Strategy 1: shrink font until it fits (but stay readable)
+    while text_w + padding > max_w and font_size > 4.0:
         font_size -= 0.5
         text_w = fitz.get_text_length(label, fontname="helv", fontsize=font_size)
 
@@ -675,31 +671,32 @@ def _image_looks_like_signature(xref: int, doc) -> bool:
     handwriting / stamps which are mostly one ink colour on white/transparent).
     Returns True if the image is *likely* a signature rather than a photo.
 
-    Thresholds are intentionally loose – better to over-detect than to miss
-    a real handwritten signature.
+    Uses pixel sampling (max 4000 pixels) for speed on large images.
+    Thresholds are intentionally loose.
     """
     try:
         pix = fitz.Pixmap(doc, xref)
-        # Convert to grayscale for simpler analysis
         if pix.n > 1:
             pix = fitz.Pixmap(fitz.csGRAY, pix)
         samples = pix.samples
         total = len(samples)
         if total < 10:
             return False
-        # Count dark, mid-tone, and light pixels
-        dark = sum(1 for b in samples if b < 100)
-        light = sum(1 for b in samples if b > 180)
-        # Signatures: mostly white/transparent with some dark strokes.
-        # Scanned signatures often have grey noise, so threshold is loose.
-        ratio = (dark + light) / total
+        # Sample up to 4000 pixels evenly for speed
+        if total > 4000:
+            step = total // 4000
+            sampled = samples[::step]
+            n = len(sampled)
+        else:
+            sampled = samples
+            n = total
+        dark = sum(1 for b in sampled if b < 100)
+        light = sum(1 for b in sampled if b > 180)
+        ratio = (dark + light) / n
         if ratio > 0.70:
             return True
-        # Also flag if there's a meaningful amount of dark ink (>3%)
-        # combined with mostly light background (>60%) – typical for
-        # faint signatures on scanned documents.
-        dark_ratio = dark / total
-        light_ratio = light / total
+        dark_ratio = dark / n
+        light_ratio = light / n
         return dark_ratio > 0.03 and light_ratio > 0.60
     except Exception:
         return False
@@ -873,8 +870,8 @@ def _redact_bottom_zone_scan(page):
     except Exception:
         pass
 
-    # Render at moderate resolution (72 DPI) – better detection than 48 DPI
-    scale = 72.0 / 72.0
+    # Render at 72 DPI – sufficient for dark-mark detection, fast
+    scale = 1.0
     mat = fitz.Matrix(scale, scale)
     clip = fitz.Rect(page_rect.x0, sig_zone_top, page_rect.x1, page_rect.y1)
 
@@ -889,9 +886,9 @@ def _redact_bottom_zone_scan(page):
 
     samples = pix.samples  # grayscale bytes (one byte per pixel)
 
-    # Divide the rendered zone into a grid of cells (~20 px each for finer detection)
-    n_cols = max(1, pw // 20)
-    n_rows = max(1, ph // 20)
+    # Divide into a grid of ~30px cells (larger = faster, still good detection)
+    n_cols = max(1, pw // 30)
+    n_rows = max(1, ph // 30)
     cell_w = pw / n_cols
     cell_h = ph / n_rows
 
@@ -1124,6 +1121,41 @@ def _detect_and_redact_signatures(page, is_scan: bool = False):
 
 
 # ---------------------------------------------------------------------------
+# Smart vision page selection – avoid unnecessary API calls
+# ---------------------------------------------------------------------------
+
+# Keywords in page text that suggest a signature / handwriting may be present.
+_SIG_HINT_WORDS = _re.compile(
+    r"unterschrift|signatur|gez\.|gezeichnet|unterzeichn|handzeichen|"
+    r"vollmacht|bevollmächtigt|hiermit bestätig|eigenhändig|"
+    r"signature|signed|witness",
+    _re.IGNORECASE,
+)
+
+
+def _page_needs_vision(page, page_idx: int, total_pages: int) -> bool:
+    """Decide whether a page is worth sending to the Vision API.
+
+    Returns True for:
+    - First and last page (almost always contain signatures/logos)
+    - Second page and second-to-last (common for multi-page contracts)
+    - Any page whose text contains signature-related keywords
+    - Documents with 4 or fewer pages (scan everything)
+    """
+    if total_pages <= 4:
+        return True
+    if page_idx <= 1 or page_idx >= total_pages - 2:
+        return True
+    try:
+        text = page.get_text("text")
+        if _SIG_HINT_WORDS.search(text):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# ---------------------------------------------------------------------------
 # GPT-5.2 Vision-based signature detection  (catch-all for missed handwriting)
 # ---------------------------------------------------------------------------
 
@@ -1185,16 +1217,16 @@ def _detect_visuals_with_vision(page, api_key: str) -> List[Tuple[fitz.Rect, str
 
     page_rect = page.rect
 
-    # Render page at 300 DPI – essential for detecting fine handwriting strokes
-    scale = 300.0 / 72.0
+    # Render at 200 DPI – good detail for signatures, fast upload (vs 300 DPI)
+    scale = 200.0 / 72.0
     mat = fitz.Matrix(scale, scale)
     try:
         pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
     except Exception:
         return []
 
-    # Convert to JPEG bytes
-    img_bytes = pix.tobytes("jpeg")
+    # Convert to JPEG (quality 80 – good balance of detail and speed)
+    img_bytes = pix.tobytes("jpeg", jpg_quality=80)
     b64_image = base64.b64encode(img_bytes).decode("utf-8")
 
     # Call GPT-5.2 vision
@@ -1542,9 +1574,9 @@ def redact_pdf(
 
             for q in quads:
                 r = q.rect if hasattr(q, "rect") else fitz.Rect(q)
-                # Minimal vertical padding so the box covers the glyphs
-                # tightly without spilling into neighbouring lines.
-                r = fitz.Rect(r.x0, r.y0 - 0.8, r.x1, r.y1 + 0.8)
+                # Slight vertical padding – covers glyphs fully including
+                # descenders/ascenders, without spilling into adjacent lines.
+                r = fitz.Rect(r.x0, r.y0 - 1.0, r.x1, r.y1 + 1.0)
                 info = _add_redaction(page, r, label, mode, category=category)
                 page_overlays.append(info)
 
@@ -1563,8 +1595,9 @@ def redact_pdf(
         _detect_and_redact_signatures(page, is_scan=page_is_scan)
 
         # GPT-5.2 vision: detect signatures, logos, stamps, photos.
-        # Runs on EVERY page – catches what heuristic methods miss.
-        if api_key:
+        # Only runs on pages likely to contain visual PII (first, last,
+        # pages with signature-indicators) to avoid unnecessary API calls.
+        if api_key and _page_needs_vision(page, page_idx, total_pages):
             vision_hits = _detect_visuals_with_vision(page, api_key)
             for rect, vis_type in vision_hits:
                 margin = 1.0 if vis_type == "paraphe" else _REDACT_MARGIN
