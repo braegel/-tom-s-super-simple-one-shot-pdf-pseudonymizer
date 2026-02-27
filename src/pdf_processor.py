@@ -543,19 +543,19 @@ def _add_redaction(page, rect: fitz.Rect, label: str, mode: str = "pseudo_vars",
 
 # Bottom fraction of each page treated as the "signature zone" where
 # detection is more aggressive (signatures, initials, stamps).
-_SIG_ZONE_FRACTION = 0.40
+_SIG_ZONE_FRACTION = 0.45
 
 # Top fraction of each page – letterheads sometimes contain initials / stamps.
-_HEADER_ZONE_FRACTION = 0.12
+_HEADER_ZONE_FRACTION = 0.14
 
 # Maximum gap (pt) between drawing strokes to consider them one cluster.
-_CLUSTER_GAP = 20
+_CLUSTER_GAP = 24
 
 # Minimum number of vector strokes in a cluster to flag as handwriting.
 _MIN_CLUSTER_STROKES = 2
 
 # Extra padding (pt) around every detected signature element.
-_REDACT_MARGIN = 2
+_REDACT_MARGIN = 3
 
 
 def _expand_rect(rect: fitz.Rect, page_rect: fitz.Rect, margin: float = 15) -> fitz.Rect:
@@ -737,17 +737,17 @@ def _redact_signature_images(page):
                 continue
 
             # General signature detection (anywhere on page):
-            # Generous size range – signatures vary enormously in size.
-            if 10 < w < 500 and 4 < h < 200 and 100 < area < 120_000:
+            # Very generous size range – signatures vary enormously.
+            if 8 < w < 600 and 4 < h < 250 and 80 < area < 180_000:
                 if _image_looks_like_signature(xref, doc):
                     expanded = _safe_expand_rect(rect, page, _REDACT_MARGIN)
                     page.add_redact_annot(expanded, text="", fill=REDACT_BG)
                     continue
 
-            # In signature/header zone: even more generous for small marks
+            # In signature/header zone: very generous for small marks
             # (initials, paraphs, stamps, small scribbles)
-            if (in_sig_zone or in_header_zone) and w > 8 and h > 4 and area > 80:
-                if w < page_rect.width * 0.6 and h < page_rect.height * 0.20:
+            if (in_sig_zone or in_header_zone) and w > 5 and h > 3 and area > 40:
+                if w < page_rect.width * 0.65 and h < page_rect.height * 0.25:
                     if _image_looks_like_signature(xref, doc):
                         expanded = _safe_expand_rect(rect, page, _REDACT_MARGIN)
                         page.add_redact_annot(expanded, text="", fill=REDACT_BG)
@@ -773,6 +773,7 @@ def _redact_signature_drawings(page):
     header_zone_bottom = page_rect.height * _HEADER_ZONE_FRACTION
 
     stroke_rects: List[fitz.Rect] = []
+    curve_rects: List[fitz.Rect] = []  # Bézier curves → strong signature signal
     for d in drawings:
         rect = fitz.Rect(d["rect"])
 
@@ -791,17 +792,41 @@ def _redact_signature_drawings(page):
 
         stroke_rects.append(rect)
 
+        # Bézier curves are the strongest signal for handwriting –
+        # straight lines appear in tables/forms, curves don't.
+        items = d.get("items", [])
+        has_curve = any(item[0] == "c" for item in items)
+        if has_curve:
+            curve_rects.append(rect)
+
     if not stroke_rects:
         return
 
     clusters = _cluster_rects(stroke_rects, max_gap=_CLUSTER_GAP)
+    curve_set = set()  # track which clusters contain curves
+    for cr in curve_rects:
+        for i, (cl_rect, _) in enumerate(clusters):
+            padded = fitz.Rect(cl_rect.x0 - 5, cl_rect.y0 - 5,
+                               cl_rect.x1 + 5, cl_rect.y1 + 5)
+            if padded.intersects(cr):
+                curve_set.add(i)
 
-    for cluster_rect, stroke_count in clusters:
+    for idx, (cluster_rect, stroke_count) in enumerate(clusters):
         in_hotzone = (cluster_rect.y0 >= sig_zone_top
                       or cluster_rect.y1 <= header_zone_bottom)
-        # In signature/header zone: very sensitive (2 strokes).
-        # Elsewhere: slightly higher threshold to avoid decorative elements.
-        min_strokes = _MIN_CLUSTER_STROKES if in_hotzone else _MIN_CLUSTER_STROKES + 1
+        has_curves = idx in curve_set
+
+        # Clusters with Bézier curves in sig/header zone → almost certainly
+        # handwriting, accept with even just 1 curved stroke.
+        if has_curves and in_hotzone:
+            min_strokes = 1
+        elif in_hotzone:
+            min_strokes = _MIN_CLUSTER_STROKES
+        elif has_curves:
+            # Curves outside hotzone: still suspicious, lower threshold
+            min_strokes = _MIN_CLUSTER_STROKES
+        else:
+            min_strokes = _MIN_CLUSTER_STROKES + 2
 
         if stroke_count < min_strokes:
             continue
@@ -1128,7 +1153,9 @@ def _detect_and_redact_signatures(page, is_scan: bool = False):
 _SIG_HINT_WORDS = _re.compile(
     r"unterschrift|signatur|gez\.|gezeichnet|unterzeichn|handzeichen|"
     r"vollmacht|bevollmächtigt|hiermit bestätig|eigenhändig|"
-    r"signature|signed|witness",
+    r"ort.*datum|datum.*ort|i\.\s*[av]\.|ppa\.|zur kenntnis|"
+    r"genehmigt|freigegeben|bestätigt durch|verantwortlich|"
+    r"signature|signed|witness|approved|authorized",
     _re.IGNORECASE,
 )
 
@@ -1159,47 +1186,64 @@ def _page_needs_vision(page, page_idx: int, total_pages: int) -> bool:
 # GPT-5.2 Vision-based signature detection  (catch-all for missed handwriting)
 # ---------------------------------------------------------------------------
 
-_VISION_PROMPT = """Du bist ein Experte für Dokumenten-Anonymisierung. Analysiere dieses Dokumentbild SEHR GRÜNDLICH auf handschriftliche und visuelle Elemente, die Personen identifizieren.
+_VISION_PROMPT = """Du bist ein forensischer Dokumentenprüfer für Datenschutz-Anonymisierung.
+Deine EINZIGE Aufgabe: ALLE handschriftlichen und visuellen Elemente finden, die eine Person identifizieren könnten.
 
-SUCHE INTENSIV NACH (jeweils mit Typ angeben):
+SYSTEMATISCHE PRÜFUNG – gehe das Bild in dieser Reihenfolge durch:
 
-1. type="unterschrift" – JEDE handschriftliche Unterschrift, Signatur, Namenszug.
-   Das sind geschwungene Tintenstriche, typische Unterschriften-Kurven, auch:
-   - Flüchtige, kaum lesbare Unterschriften (einzelner Strich mit Schnörkel)
-   - Sehr kleine Unterschriften in Ecken oder am Seitenrand
-   - Unterschriften die teilweise von Linien oder Text überlagert werden
-   - Unterschriften auf dunklem oder farbigem Hintergrund
-   - Blaue, schwarze, oder andere Tintenfarben
-   - Digitale Unterschriften die handschriftlich aussehen
+SCHRITT 1: Scanne den UNTEREN DRITTEL des Dokuments (dort sind 80% aller Unterschriften).
+   Suche nach JEDER Art von Tintenstrich, Schnörkel, Kurve, die NICHT maschinell gedruckt ist.
+
+SCHRITT 2: Suche neben/unter jedem Text wie "Unterschrift", "gez.", "Datum/Unterschrift",
+   "Ort, Datum", "Signed", "i.A.", "i.V.", "ppa." – dort MUSS fast immer eine Signatur sein.
+   Auch wenn sie nur ein einzelner horizontaler Strich oder Kringel ist!
+
+SCHRITT 3: Scanne ALLE vier Ränder und Ecken auf Paraphen, Initialen, Häkchen.
+
+SCHRITT 4: Prüfe Kopfbereich auf Logos, Stempel, Siegel.
+
+TYPEN:
+1. type="unterschrift" – Handschriftliche Unterschriften, Signaturen, Namenszüge.
+   ACHTUNG: Unterschriften sehen SEHR unterschiedlich aus:
+   - Große geschwungene Bögen mit Schnörkeln
+   - Winzige unleserliche Kringel (1-2cm breit)
+   - Ein einzelner schräger Strich mit kleinem Häkchen
+   - Nur Initialen in Schreibschrift ("JM", "SW")
+   - Punkte und Striche die zusammen einen Namen andeuten
+   - Blaue, schwarze, graue oder verblasste Tinte
+   - Digital eingefügte Bilder von handschriftlichen Unterschriften
+   - Unterschriften die auf einer Linie sitzen (______)
+   - Unterschriften die mit der gedruckten Zeile "Unterschrift:" verschmelzen
 
 2. type="paraphe" – Handschriftliche Kürzel, Initialen, Häkchen, Paraphen.
-   JEDE handschriftliche Markierung: Haken, Kreuze, Kürzel, "gez.", Initialen
-   wie "HM" oder "S.W.", Randnotizen in Handschrift, auch wenn winzig klein.
+   Jede handschriftliche Markierung: Haken (✓), Kreuze (×), Kürzel,
+   handgeschriebene Buchstaben/Initialen, Randnotizen, "gez. [Name]" in Handschrift.
+   Auch: handschriftliche Datumsangaben, handgeschriebene Zahlen/Aktenzeichen.
 
-3. type="logo" – Firmenlogos, Markenzeichen, Wappen, graphische Briefkopf-
-   Elemente (NICHT rein typographische Firmennamen, nur echte Grafiken/Icons)
+3. type="logo" – Firmenlogos, Markenzeichen, Wappen (nur echte Grafiken, kein reiner Text)
 
-4. type="stempel" – Firmenstempel, Amtsstempel, Siegel, Rundstempel, Datumsstempel.
-   Auch verblasste oder teilweise sichtbare Stempel.
+4. type="stempel" – Firmenstempel, Amtsstempel, Siegel, Rundstempel (auch verblasst)
 
-5. type="foto" – Passfotos, Profilbilder, eingescannte Fotos von Personen
+5. type="foto" – Passfotos, Profilbilder, eingescannte Personenfotos
 
 NICHT MELDEN:
-- Gedruckten maschinellen Text (auch kursiv oder fett)
+- Maschinell gedruckten Text (auch kursiv, fett, oder unterstrichenen)
 - Tabellen-Linien, Rahmen, Trennstriche, Formular-Linien
 - Seitenzahlen, Fußnoten
-- Große Hintergrundmuster, ganzseitige Wasserzeichen
+- Leere Unterschriftenzeilen OHNE handschriftliche Markierung
 
-OBERSTE REGEL: Im Zweifel IMMER melden! Eine übersehene Unterschrift ist
-ein schwerer Datenschutzverstoß. Ein falscher Treffer kann korrigiert werden.
-Prüfe JEDE Ecke, JEDEN Rand, JEDE Zeile wo "Unterschrift:" oder ähnliches steht.
+GOLDENE REGEL: Lieber 5 Fehlalarme als 1 übersehene Unterschrift!
+Eine übersehene Signatur = DSGVO-Verstoß. Melde ALLES was auch nur
+ENTFERNT handschriftlich aussehen KÖNNTE.
 
-Gib für jede Fundstelle eine passende Bounding-Box (Prozent der Seitenbreite/-höhe).
+Bounding-Box: Prozent der Seitenbreite/-höhe. Box soll die Signatur
+KOMPLETT einschließen inkl. Ausläufer und Schnörkel – lieber etwas
+ZU GROSS als zu klein.
 
 Antworte NUR mit JSON:
 {
   "signatures": [
-    {"x_pct": 10, "y_pct": 85, "w_pct": 25, "h_pct": 5, "type": "unterschrift"}
+    {"x_pct": 10, "y_pct": 85, "w_pct": 30, "h_pct": 8, "type": "unterschrift"}
   ]
 }
 
@@ -1279,8 +1323,21 @@ def _detect_visuals_with_vision(page, api_key: str) -> List[Tuple[fitz.Rect, str
             h = sig["h_pct"] / 100.0 * ph
             rect = fitz.Rect(x, y, x + w, y + h)
             sig_type = sig.get("type", "unterschrift")
-            # Sanity check: not the entire page; allow very small marks (paraphs)
+            # Sanity check: not the entire page; allow very small marks
             if rect.width > 3 and rect.height > 2 and rect.width < pw * 0.95:
+                # Enforce minimum box size for signatures (GPT sometimes
+                # reports very tight boxes that miss stroke tails/flourishes)
+                if sig_type in ("unterschrift", "paraphe"):
+                    min_w = max(rect.width, 40)   # at least ~1.5cm
+                    min_h = max(rect.height, 14)   # at least ~0.5cm
+                    cx = rect.x0 + rect.width / 2
+                    cy = rect.y0 + rect.height / 2
+                    rect = fitz.Rect(
+                        max(page_rect.x0, cx - min_w / 2),
+                        max(page_rect.y0, cy - min_h / 2),
+                        min(page_rect.x1, cx + min_w / 2),
+                        min(page_rect.y1, cy + min_h / 2),
+                    )
                 results.append((rect, sig_type))
         except (KeyError, TypeError):
             continue
@@ -1600,7 +1657,14 @@ def redact_pdf(
         if api_key and _page_needs_vision(page, page_idx, total_pages):
             vision_hits = _detect_visuals_with_vision(page, api_key)
             for rect, vis_type in vision_hits:
-                margin = 1.0 if vis_type == "paraphe" else _REDACT_MARGIN
+                # Generous margin for handwriting – flourishes/tails often
+                # extend beyond the core bounding box.
+                if vis_type == "unterschrift":
+                    margin = 4.0
+                elif vis_type == "paraphe":
+                    margin = 2.0
+                else:
+                    margin = _REDACT_MARGIN
                 expanded = _safe_expand_rect(rect, page, margin)
                 page.add_redact_annot(expanded, text="", fill=REDACT_BG)
 

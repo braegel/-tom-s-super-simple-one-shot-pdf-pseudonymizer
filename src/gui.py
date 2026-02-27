@@ -143,24 +143,24 @@ def load_scope() -> str:
 # Colour palette – soft blue-teal tones with black accents
 # ---------------------------------------------------------------------------
 
-BG_DARK         = "#EBF4F5"         # soft teal-tinted background
-BG_CARD         = "#F3F9FA"         # slightly lighter card surface
-BG_SURFACE      = "#DFF0F1"         # subtle teal for inputs/bars
-BG_HOVER        = "#D2E7E9"         # hover highlight
+BG_DARK         = "#EAF0F8"         # soft blue-grey background
+BG_CARD         = "#F2F6FC"         # slightly lighter card surface
+BG_SURFACE      = "#DDE8F4"         # subtle blue for inputs/bars
+BG_HOVER        = "#CFDFEF"         # hover highlight
 
-ACCENT          = "#000000"         # black stays for text & accents
-ACCENT_HOVER    = "#1A3038"         # dark teal-black on hover
-ACCENT_SOFT     = "#3D6670"         # muted teal for secondary
+ACCENT          = "#2563EB"         # vivid blue primary
+ACCENT_HOVER    = "#1D4ED8"         # deeper blue on hover
+ACCENT_SOFT     = "#5B8BD6"         # muted blue for secondary
 
-BORDER          = "#BFDADD"         # teal-grey border
-BORDER_FOCUS    = "#2B5E68"         # deeper teal on focus
+BORDER          = "#BDD0E8"         # blue-grey border
+BORDER_FOCUS    = "#3B7DD8"         # strong blue on focus
 
-TEXT_PRIMARY    = "#000000"
-TEXT_SECONDARY  = "#555555"
-TEXT_MUTED      = "#999999"
+TEXT_PRIMARY    = "#0F172A"         # near-black with blue tint
+TEXT_SECONDARY  = "#475569"         # slate secondary
+TEXT_MUTED      = "#94A3B8"         # slate muted
 
-SUCCESS         = "#333333"
-ERROR           = "#CC0000"
+SUCCESS         = "#1E40AF"         # deep blue for success
+ERROR           = "#DC2626"         # red for errors
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +230,7 @@ QLabel#providerPill {{
     color: {TEXT_PRIMARY};
     background-color: {BG_SURFACE};
     border: 1px solid {BORDER};
-    border-radius: 14px;
+    border-radius: 16px;
     padding: 5px 14px;
     font-size: 11px;
 }}
@@ -248,7 +248,7 @@ QPushButton {{
     background-color: {ACCENT};
     color: #FFFFFF;
     border: none;
-    border-radius: 14px;
+    border-radius: 18px;
     padding: 10px 28px;
     font-size: 13px;
 }}
@@ -261,13 +261,13 @@ QPushButton:pressed {{
 QPushButton:disabled {{
     background-color: {BG_SURFACE};
     color: {TEXT_MUTED};
-    border-radius: 14px;
+    border-radius: 18px;
 }}
 QPushButton#settingsBtn {{
     background-color: {BG_SURFACE};
     color: {TEXT_SECONDARY};
     border: 1px solid {BORDER};
-    border-radius: 14px;
+    border-radius: 16px;
     padding: 7px 18px;
     font-size: 12px;
 }}
@@ -280,7 +280,7 @@ QPushButton#selectBtn {{
     background-color: {BG_SURFACE};
     color: {TEXT_PRIMARY};
     border: 1px solid {BORDER};
-    border-radius: 14px;
+    border-radius: 18px;
     padding: 9px 22px;
     font-size: 13px;
 }}
@@ -297,7 +297,7 @@ QPushButton#openFolderBtn {{
     background-color: {BG_SURFACE};
     color: {TEXT_PRIMARY};
     border: 1px solid {BORDER};
-    border-radius: 14px;
+    border-radius: 16px;
     padding: 7px 18px;
     font-size: 12px;
 }}
@@ -309,17 +309,17 @@ QPushButton#openFolderBtn:hover {{
 /* ── Progress ──────────────────────────────────────────── */
 QProgressBar {{
     border: none;
-    border-radius: 11px;
+    border-radius: 12px;
     text-align: center;
-    color: {TEXT_PRIMARY};
+    color: #FFFFFF;
     background-color: {BG_SURFACE};
-    min-height: 22px;
-    max-height: 22px;
+    min-height: 24px;
+    max-height: 24px;
     font-size: 11px;
 }}
 QProgressBar::chunk {{
     background-color: {ACCENT};
-    border-radius: 11px;
+    border-radius: 12px;
 }}
 
 /* ── Inputs ────────────────────────────────────────────── */
@@ -327,7 +327,7 @@ QComboBox {{
     background-color: {BG_CARD};
     color: {TEXT_PRIMARY};
     border: 1px solid {BORDER};
-    border-radius: 12px;
+    border-radius: 14px;
     padding: 10px 14px;
     font-size: 13px;
 }}
@@ -339,7 +339,7 @@ QComboBox QAbstractItemView {{
     color: {TEXT_PRIMARY};
     selection-background-color: {BG_SURFACE};
     border: 1px solid {BORDER};
-    border-radius: 10px;
+    border-radius: 12px;
     outline: none;
     padding: 4px;
 }}
@@ -351,7 +351,7 @@ QLineEdit {{
     background-color: {BG_CARD};
     color: {TEXT_PRIMARY};
     border: 1px solid {BORDER};
-    border-radius: 12px;
+    border-radius: 14px;
     padding: 10px 14px;
     font-size: 13px;
     selection-background-color: {BG_HOVER};
@@ -367,7 +367,7 @@ QLineEdit[valid="true"] {{
 QGroupBox {{
     color: {TEXT_PRIMARY};
     border: 1px solid {BORDER};
-    border-radius: 16px;
+    border-radius: 20px;
     margin-top: 14px;
     padding: 22px 18px 14px 18px;
     font-size: 13px;
@@ -397,7 +397,7 @@ QStatusBar {{
 QFrame#dropZone {{
     background-color: {BG_CARD};
     border: 2px dashed {BORDER};
-    border-radius: 24px;
+    border-radius: 28px;
 }}
 QFrame#dropZone:hover {{
     border-color: {ACCENT_SOFT};
