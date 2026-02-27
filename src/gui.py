@@ -7,6 +7,7 @@ Elegant and sober – Swiss-style minimalism.
 """
 
 import os
+import subprocess
 import sys
 import json
 import traceback
@@ -30,20 +31,14 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
     QSizePolicy,
-    QGraphicsOpacityEffect,
-    QSpacerItem,
 )
 from PyQt6.QtCore import (
     Qt,
     QThread,
     pyqtSignal,
-    pyqtProperty,
     QSize,
     QSettings,
     QTimer,
-    QPropertyAnimation,
-    QEasingCurve,
-    QParallelAnimationGroup,
 )
 from PyQt6.QtGui import (
     QDragEnterEvent,
@@ -51,11 +46,6 @@ from PyQt6.QtGui import (
     QFont,
     QPalette,
     QColor,
-    QPainter,
-    QPen,
-    QBrush,
-    QLinearGradient,
-    QRadialGradient,
     QMouseEvent,
 )
 
@@ -171,7 +161,6 @@ TEXT_MUTED      = "#999999"
 
 SUCCESS         = "#333333"
 ERROR           = "#CC0000"
-WARNING         = "#666666"
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +413,7 @@ QFrame#dropZone[success="true"] {{
 QFrame#dropZone[error="true"] {{
     border-color: {ERROR};
     border-style: solid;
-    background-color: #FFF5F5;
+    background-color: {BG_CARD};
 }}
 
 /* ── Scrollbar (thin) ──────────────────────────────────── */
@@ -704,7 +693,6 @@ class AnonymizeWorker(QThread):
             # Step 5 – redact PDF
             mode_label = {
                 MODE_ANONYMIZE: "anonymisieren",
-                MODE_PSEUDO_VARS: "pseudonymisieren",
                 MODE_PSEUDO_NATURAL: "pseudonymisieren",
             }.get(self.mode, "verarbeiten")
             self.step.emit(f"Schritt 5/5  –  PDF {mode_label}")
@@ -1162,12 +1150,20 @@ class MainWindow(QMainWindow):
     def _open_output_folder(self):
         if self._last_output:
             folder = os.path.dirname(self._last_output)
+            self._open_path(folder)
+
+    @staticmethod
+    def _open_path(path: str):
+        """Open a file or folder in the system's default application."""
+        try:
             if sys.platform == "win32":
-                os.startfile(folder)
+                os.startfile(path)
             elif sys.platform == "darwin":
-                os.system(f'open "{folder}"')
+                subprocess.Popen(["open", path])
             else:
-                os.system(f'xdg-open "{folder}"')
+                subprocess.Popen(["xdg-open", path])
+        except Exception:
+            pass
 
     # -- Slots --
 
@@ -1274,6 +1270,7 @@ class MainWindow(QMainWindow):
         self.worker.entity_count.connect(self._on_entity_count)
         self.worker.finished_ok.connect(self.on_success)
         self.worker.finished_err.connect(self.on_error)
+        self.worker.finished.connect(self.worker.deleteLater)
         self.worker.start()
 
     def _on_entity_count(self, count: int):
@@ -1304,17 +1301,7 @@ class MainWindow(QMainWindow):
 
     def _open_pdf(self, path: str):
         """Open the PDF in the system's default PDF viewer."""
-        try:
-            if sys.platform == "win32":
-                os.startfile(path)
-            elif sys.platform == "darwin":
-                import subprocess
-                subprocess.Popen(["open", path])
-            else:
-                import subprocess
-                subprocess.Popen(["xdg-open", path])
-        except Exception:
-            pass  # silently ignore if no viewer is available
+        self._open_path(path)
 
     def on_error(self, msg: str):
         self._set_processing(False)
@@ -1391,7 +1378,7 @@ def run_app():
         )
         sys.exit(1)
 
-    # Dark palette
+    # Application palette (clean black-on-white)
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor(BG_DARK))
     palette.setColor(QPalette.ColorRole.WindowText, QColor(TEXT_PRIMARY))

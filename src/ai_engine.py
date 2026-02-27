@@ -34,7 +34,7 @@ SCOPE_ALL = "all"                # above + financial numbers, amounts, percentag
 _PERSON_CATEGORIES = {
     "VORNAME", "NACHNAME", "STRASSE", "HAUSNUMMER", "STADT", "PLZ", "LAND",
     "EMAIL", "TELEFON", "UNTERNEHMEN", "GEBURTSDATUM", "UNTERSCHRIFT",
-    "SOZIALVERSICHERUNG", "AUSWEISNUMMER", "GRUNDSTUECK",
+    "SOZIALVERSICHERUNG", "AUSWEISNUMMER", "GRUNDSTUECK", "STEUERNUMMER",
 }
 
 # Approximate character limit per chunk.  Most models handle ~120k chars
@@ -185,6 +185,7 @@ REGELN:
 - Telefon → andere Nummer gleichen Formats
 - Unternehmen → andere realistische Firmennamen gleicher Art
 - Geldbeträge → andere Beträge in ähnlicher Größenordnung
+- Grundstücke → andere Parzellen-/Flurnummern/Grundbucheinträge gleichen Formats
 - Geburtsdaten → andere realistische Daten
 - Steuernummern/SVN/Ausweisnummern → andere Nummern gleichen Formats
 - Aktenzeichen → andere Aktenzeichen gleichen Formats
@@ -213,8 +214,21 @@ def _parse_ai_response(response_text: str) -> List[Dict[str, str]]:
     fence = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
-    data = json.loads(text)
-    return data.get("entities", [])
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        # AI occasionally wraps JSON in extra text – try to extract it
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start >= 0 and end > start:
+            data = json.loads(text[start:end])
+        else:
+            return []
+    entities = data.get("entities", [])
+    # Validate structure: each entity must have text + category
+    return [e for e in entities if isinstance(e, dict)
+            and "text" in e and "category" in e
+            and isinstance(e["text"], str) and len(e["text"].strip()) > 0]
 
 
 # ---------------------------------------------------------------------------

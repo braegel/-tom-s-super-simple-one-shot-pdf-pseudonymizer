@@ -23,6 +23,7 @@ Key features:
 import fitz  # PyMuPDF
 from typing import Dict, Tuple, List, Optional, Callable
 import os
+import json as _json
 import re as _re
 import subprocess
 import tempfile
@@ -74,6 +75,13 @@ CATEGORY_LABELS = {
 # ---------------------------------------------------------------------------
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".jpg", ".jpeg"}
+
+# Generic legal suffixes – excluded when expanding compound entity names.
+_GENERIC_SUFFIXES = {
+    "gmbh", "ag", "kg", "ohg", "gbr", "se", "eg", "ev",
+    "ltd", "inc", "llc", "co", "ug", "mbh", "e.v.", "e.u.",
+    "und", "&", "der", "die", "das", "für", "von",
+}
 
 
 def _has_text_layer(pdf_path: str) -> bool:
@@ -1178,7 +1186,6 @@ def _detect_visuals_with_vision(page, api_key: str) -> List[Tuple[fitz.Rect, str
     *type_str* is one of: unterschrift, paraphe, logo, stempel, foto.
     """
     import base64
-    import json as _json
 
     page_rect = page.rect
 
@@ -1224,8 +1231,7 @@ def _detect_visuals_with_vision(page, api_key: str) -> List[Tuple[fitz.Rect, str
     # Parse response
     try:
         text = response.choices[0].message.content.strip()
-        import re
-        fence = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+        fence = _re.search(r"```(?:json)?\s*\n?(.*?)```", text, _re.DOTALL)
         if fence:
             text = fence.group(1).strip()
         data = _json.loads(text)
@@ -1302,7 +1308,7 @@ def _draw_rounded_rect(shape, rect: fitz.Rect, radius: float = 2.0):
         fitz.Point(x0 + r, y0))
 
 
-def _draw_redaction_overlays(page, overlays: list, entity_map=None):
+def _draw_redaction_overlays(page, overlays: list):
     """Draw clean black redaction boxes over areas where content was removed.
 
     Annotations use ``fill=REDACT_BG`` which (a) deletes text content and
@@ -1394,11 +1400,6 @@ def _expand_entity_map(entity_map: Dict[str, Tuple[str, str]]):
             # E.g. "Sparkasse Köln-Bonn" → "Sparkasse Köln-Bonn" is already
             # there; but if text says just "Sparkasse" we need to catch it.
             # Add each word that is >= 4 chars and not a generic legal suffix.
-            _GENERIC_SUFFIXES = {
-                "gmbh", "ag", "kg", "ohg", "gbr", "se", "eg", "ev",
-                "ltd", "inc", "llc", "co", "ug", "mbh", "e.v.", "e.u.",
-                "und", "und", "&", "der", "die", "das", "für", "von",
-            }
             for w in words:
                 wl = w.lower().rstrip(".,;:")
                 if len(wl) >= 4 and wl not in _GENERIC_SUFFIXES and w not in existing:
@@ -1538,7 +1539,7 @@ def redact_pdf(
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_REMOVE)
 
         # Re-draw every redacted area as an elegant filled overlay
-        _draw_redaction_overlays(page, page_overlays, entity_map=entity_map)
+        _draw_redaction_overlays(page, page_overlays)
 
     # -- Append summary page --
     _append_summary_page(doc, entity_map, mode, logo_count=logo_count)
