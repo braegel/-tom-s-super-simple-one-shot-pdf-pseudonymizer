@@ -6,7 +6,7 @@ Key features:
 - Uses fitz redaction annotations so the underlying text is truly removed
   (not merely covered by a shape that could be lifted).
 - Sorts entities longest-first to avoid partial matches inside longer ones.
-- Appends a summary page listing all variable assignments.
+- Strips all metadata from the output PDF.
 - Enhanced signature / handwriting detection combining five methods:
   1. Embedded image analysis (expanded size heuristics)
   2. Vector drawing clustering (detects pen-drawn signatures)
@@ -38,36 +38,6 @@ REDACT_FG       = (1.0, 1.0, 1.0)        # white label text
 REDACT_STROKE   = (0.18, 0.18, 0.18)     # very subtle dark border
 
 # No category accent colours – all redaction boxes are pure black.
-
-# Legacy aliases kept for summary-page styling
-BLACK = (0.0, 0.0, 0.0)
-DARK_GRAY = (0.25, 0.25, 0.25)
-WHITE = (1, 1, 1)
-LIGHT_BG = (0.95, 0.95, 0.93)
-
-# Category labels for the summary page
-CATEGORY_LABELS = {
-    "VORNAME": "Vorname",
-    "NACHNAME": "Nachname",
-    "STRASSE": "Straße",
-    "HAUSNUMMER": "Hausnummer",
-    "STADT": "Stadt / Ort",
-    "PLZ": "Postleitzahl",
-    "LAND": "Land",
-    "KONTONUMMER": "Kontonummer / IBAN",
-    "EMAIL": "E-Mail-Adresse",
-    "TELEFON": "Telefonnummer",
-    "KRYPTO_ADRESSE": "Krypto-Adresse",
-    "UNTERNEHMEN": "Unternehmen",
-    "GRUNDSTUECK": "Grundstück",
-    "GEBURTSDATUM": "Geburtsdatum",
-    "SOZIALVERSICHERUNG": "Sozialversicherungsnummer",
-    "STEUERNUMMER": "Steuernummer",
-    "AUSWEISNUMMER": "Ausweisnummer",
-    "GELDBETRAG": "Geldbetrag / Währung",
-    "UNTERSCHRIFT": "Unterschrift / Handschrift",
-    "LOGO": "Logo / Markenzeichen",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -576,17 +546,19 @@ def _add_redaction(page, rect: fitz.Rect, label: str, mode: str = "pseudo_vars",
 # ---------------------------------------------------------------------------
 
 # Bottom fraction of each page treated as the "signature zone" where
-# detection is more aggressive.  Kept conservative to avoid overblocking.
-_SIG_ZONE_FRACTION = 0.25
+# detection is more aggressive (signatures, initials, stamps).
+_SIG_ZONE_FRACTION = 0.40
+
+# Top fraction of each page – letterheads sometimes contain initials / stamps.
+_HEADER_ZONE_FRACTION = 0.12
 
 # Maximum gap (pt) between drawing strokes to consider them one cluster.
-_CLUSTER_GAP = 14
+_CLUSTER_GAP = 20
 
 # Minimum number of vector strokes in a cluster to flag as handwriting.
-_MIN_CLUSTER_STROKES = 3
+_MIN_CLUSTER_STROKES = 2
 
 # Extra padding (pt) around every detected signature element.
-# Keep small to avoid covering adjacent text.
 _REDACT_MARGIN = 2
 
 
@@ -702,6 +674,9 @@ def _image_looks_like_signature(xref: int, doc) -> bool:
     """Heuristic: check if an image has low colour diversity (typical for
     handwriting / stamps which are mostly one ink colour on white/transparent).
     Returns True if the image is *likely* a signature rather than a photo.
+
+    Thresholds are intentionally loose – better to over-detect than to miss
+    a real handwritten signature.
     """
     try:
         pix = fitz.Pixmap(doc, xref)
@@ -712,27 +687,34 @@ def _image_looks_like_signature(xref: int, doc) -> bool:
         total = len(samples)
         if total < 10:
             return False
-        # Count very dark and very light pixels
-        dark = sum(1 for b in samples if b < 80)
-        light = sum(1 for b in samples if b > 200)
-        # Signatures: mostly white/transparent with some dark strokes
+        # Count dark, mid-tone, and light pixels
+        dark = sum(1 for b in samples if b < 100)
+        light = sum(1 for b in samples if b > 180)
+        # Signatures: mostly white/transparent with some dark strokes.
+        # Scanned signatures often have grey noise, so threshold is loose.
         ratio = (dark + light) / total
-        return ratio > 0.85  # >85% of pixels are either very dark or very light
+        if ratio > 0.70:
+            return True
+        # Also flag if there's a meaningful amount of dark ink (>3%)
+        # combined with mostly light background (>60%) – typical for
+        # faint signatures on scanned documents.
+        dark_ratio = dark / total
+        light_ratio = light / total
+        return dark_ratio > 0.03 and light_ratio > 0.60
     except Exception:
-        return False  # If we can't analyse, do NOT assume signature – avoids overblocking
+        return False
 
 
 def _redact_signature_images(page):
     """Detect and redact images that look like signatures or handwriting.
 
-    Extra aggressive in the signature zone (bottom 45 % of page).
-    Any small-to-medium image in the signature zone is assumed to be
-    a signature, stamp, or handwritten mark.
-
-    Also uses pixel analysis to distinguish signatures from photos.
+    Extra aggressive in the signature zone (bottom 40%) and header zone
+    (top 12%).  Uses pixel analysis to distinguish signatures from photos.
+    Intentionally generous – a missed signature is worse than a false positive.
     """
     page_rect = page.rect
     sig_zone_top = page_rect.height * (1 - _SIG_ZONE_FRACTION)
+    header_zone_bottom = page_rect.height * _HEADER_ZONE_FRACTION
 
     try:
         images = page.get_images(full=True)
@@ -751,22 +733,24 @@ def _redact_signature_images(page):
             w, h = rect.width, rect.height
             area = w * h
             in_sig_zone = rect.y0 >= sig_zone_top
+            in_header_zone = rect.y1 <= header_zone_bottom
 
-            # Skip very large images (full-page scans, photos)
-            if w > page_rect.width * 0.8 and h > page_rect.height * 0.5:
+            # Skip very large images (full-page scans, large photos)
+            if w > page_rect.width * 0.75 and h > page_rect.height * 0.4:
                 continue
 
-            # General signature detection (anywhere on page)
-            # Expanded range to catch more signature sizes
-            if 15 < w < 400 and 5 < h < 150 and 200 < area < 80_000:
+            # General signature detection (anywhere on page):
+            # Generous size range – signatures vary enormously in size.
+            if 10 < w < 500 and 4 < h < 200 and 100 < area < 120_000:
                 if _image_looks_like_signature(xref, doc):
                     expanded = _safe_expand_rect(rect, page, _REDACT_MARGIN)
                     page.add_redact_annot(expanded, text="", fill=REDACT_BG)
                     continue
 
-            # In signature zone: moderate tolerance for scribbles / stamps
-            if in_sig_zone and w > 15 and h > 6 and area > 200:
-                if w < page_rect.width * 0.5 and h < page_rect.height * 0.15:
+            # In signature/header zone: even more generous for small marks
+            # (initials, paraphs, stamps, small scribbles)
+            if (in_sig_zone or in_header_zone) and w > 8 and h > 4 and area > 80:
+                if w < page_rect.width * 0.6 and h < page_rect.height * 0.20:
                     if _image_looks_like_signature(xref, doc):
                         expanded = _safe_expand_rect(rect, page, _REDACT_MARGIN)
                         page.add_redact_annot(expanded, text="", fill=REDACT_BG)
@@ -777,6 +761,7 @@ def _redact_signature_drawings(page):
 
     Hand-drawn signatures consist of many short, often curved strokes
     clustered together – very different from table borders or form lines.
+    Checks the entire page, with lower thresholds in signature/header zones.
     """
     try:
         drawings = page.get_drawings()
@@ -788,22 +773,23 @@ def _redact_signature_drawings(page):
 
     page_rect = page.rect
     sig_zone_top = page_rect.height * (1 - _SIG_ZONE_FRACTION)
+    header_zone_bottom = page_rect.height * _HEADER_ZONE_FRACTION
 
     stroke_rects: List[fitz.Rect] = []
     for d in drawings:
         rect = fitz.Rect(d["rect"])
 
         # Skip page-wide horizontal rules / table borders
-        if rect.width > page_rect.width * 0.7 and rect.height < 3:
+        if rect.width > page_rect.width * 0.6 and rect.height < 3:
             continue
         # Skip full-height elements (side borders)
-        if rect.height > page_rect.height * 0.4:
+        if rect.height > page_rect.height * 0.35:
             continue
         # Skip large filled backgrounds / boxes
-        if rect.width * rect.height > page_rect.width * page_rect.height * 0.25:
+        if rect.width * rect.height > page_rect.width * page_rect.height * 0.20:
             continue
         # Skip invisible specks
-        if rect.width < 1 and rect.height < 1:
+        if rect.width < 0.5 and rect.height < 0.5:
             continue
 
         stroke_rects.append(rect)
@@ -814,10 +800,11 @@ def _redact_signature_drawings(page):
     clusters = _cluster_rects(stroke_rects, max_gap=_CLUSTER_GAP)
 
     for cluster_rect, stroke_count in clusters:
-        in_sig_zone = cluster_rect.y0 >= sig_zone_top
-        # Require at least 2 strokes even in signature zone to avoid
-        # overblocking decorative elements and separator lines
-        min_strokes = 2 if in_sig_zone else _MIN_CLUSTER_STROKES
+        in_hotzone = (cluster_rect.y0 >= sig_zone_top
+                      or cluster_rect.y1 <= header_zone_bottom)
+        # In signature/header zone: very sensitive (2 strokes).
+        # Elsewhere: slightly higher threshold to avoid decorative elements.
+        min_strokes = _MIN_CLUSTER_STROKES if in_hotzone else _MIN_CLUSTER_STROKES + 1
 
         if stroke_count < min_strokes:
             continue
@@ -947,10 +934,9 @@ def _redact_bottom_zone_scan(page):
         return
 
     # Merge adjacent suspect cells and redact broad areas
-    # Require 5+ cells (was 3) to avoid overblocking stray marks
-    clusters = _cluster_rects(suspect_cells, max_gap=12)
+    clusters = _cluster_rects(suspect_cells, max_gap=14)
     for merged_rect, count in clusters:
-        if count >= 5:
+        if count >= 3:
             expanded = _safe_expand_rect(merged_rect, page, _REDACT_MARGIN)
             page.add_redact_annot(expanded, text="", fill=REDACT_BG)
 
@@ -959,8 +945,6 @@ def _redact_bottom_zone_scan(page):
 # Logo / brand image / letterhead detection
 # ---------------------------------------------------------------------------
 
-# Fraction of page height treated as header/footer zone for logo detection.
-_HEADER_ZONE_FRACTION = 0.15   # top 15 %
 _FOOTER_ZONE_FRACTION = 0.12   # bottom 12 %
 
 
@@ -1143,30 +1127,42 @@ def _detect_and_redact_signatures(page, is_scan: bool = False):
 # GPT-5.2 Vision-based signature detection  (catch-all for missed handwriting)
 # ---------------------------------------------------------------------------
 
-_VISION_PROMPT = """Analysiere dieses Dokumentbild auf persönlich identifizierbare visuelle Elemente.
+_VISION_PROMPT = """Du bist ein Experte für Dokumenten-Anonymisierung. Analysiere dieses Dokumentbild SEHR GRÜNDLICH auf handschriftliche und visuelle Elemente, die Personen identifizieren.
 
-SUCHE NACH (jeweils mit Typ angeben):
+SUCHE INTENSIV NACH (jeweils mit Typ angeben):
 
-1. type="unterschrift" – ECHTE handschriftliche Unterschriften / Signaturen /
-   Namenszüge (geschwungene Tintenstriche, typische Unterschriften-Optik)
-2. type="paraphe" – Handschriftliche Paraphen / Kürzel neben Vertragsklauseln
+1. type="unterschrift" – JEDE handschriftliche Unterschrift, Signatur, Namenszug.
+   Das sind geschwungene Tintenstriche, typische Unterschriften-Kurven, auch:
+   - Flüchtige, kaum lesbare Unterschriften (einzelner Strich mit Schnörkel)
+   - Sehr kleine Unterschriften in Ecken oder am Seitenrand
+   - Unterschriften die teilweise von Linien oder Text überlagert werden
+   - Unterschriften auf dunklem oder farbigem Hintergrund
+   - Blaue, schwarze, oder andere Tintenfarben
+   - Digitale Unterschriften die handschriftlich aussehen
+
+2. type="paraphe" – Handschriftliche Kürzel, Initialen, Häkchen, Paraphen.
+   JEDE handschriftliche Markierung: Haken, Kreuze, Kürzel, "gez.", Initialen
+   wie "HM" oder "S.W.", Randnotizen in Handschrift, auch wenn winzig klein.
+
 3. type="logo" – Firmenlogos, Markenzeichen, Wappen, graphische Briefkopf-
    Elemente (NICHT rein typographische Firmennamen, nur echte Grafiken/Icons)
-4. type="stempel" – Firmenstempel, Amtsstempel, Siegel
+
+4. type="stempel" – Firmenstempel, Amtsstempel, Siegel, Rundstempel, Datumsstempel.
+   Auch verblasste oder teilweise sichtbare Stempel.
+
 5. type="foto" – Passfotos, Profilbilder, eingescannte Fotos von Personen
 
-NICHT MELDEN (kein Overblocking!):
-- Gedruckten Text (auch wenn kursiv oder stylisiert)
-- Reine Text-Überschriften und Briefkopf-Text ohne Grafik
-- Linien, Rahmen, Tabellenbegrenzungen, Trennstriche
-- Maschinell gesetzte Namenszüge unter "Mit freundlichen Grüßen"
-- Seitenzahlen, Fußnoten, gedruckte Initialen
-- Hintergrundmuster, Wasserzeichen (zu groß / zerstört Inhalt)
+NICHT MELDEN:
+- Gedruckten maschinellen Text (auch kursiv oder fett)
+- Tabellen-Linien, Rahmen, Trennstriche, Formular-Linien
+- Seitenzahlen, Fußnoten
+- Große Hintergrundmuster, ganzseitige Wasserzeichen
 
-WICHTIG: Lieber WENIGER melden als Dokument-Inhalte zu zerstören!
-Nur EINDEUTIG visuelle Elemente markieren. Enge Bounding-Boxen.
+OBERSTE REGEL: Im Zweifel IMMER melden! Eine übersehene Unterschrift ist
+ein schwerer Datenschutzverstoß. Ein falscher Treffer kann korrigiert werden.
+Prüfe JEDE Ecke, JEDEN Rand, JEDE Zeile wo "Unterschrift:" oder ähnliches steht.
 
-Für jede Fundstelle gib eine ENGE Bounding-Box (Prozent der Seitenbreite/-höhe).
+Gib für jede Fundstelle eine passende Bounding-Box (Prozent der Seitenbreite/-höhe).
 
 Antworte NUR mit JSON:
 {
@@ -1189,8 +1185,8 @@ def _detect_visuals_with_vision(page, api_key: str) -> List[Tuple[fitz.Rect, str
 
     page_rect = page.rect
 
-    # Render page at 200 DPI for better handwriting detail detection
-    scale = 200.0 / 72.0
+    # Render page at 300 DPI – essential for detecting fine handwriting strokes
+    scale = 300.0 / 72.0
     mat = fitz.Matrix(scale, scale)
     try:
         pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
@@ -1251,8 +1247,8 @@ def _detect_visuals_with_vision(page, api_key: str) -> List[Tuple[fitz.Rect, str
             h = sig["h_pct"] / 100.0 * ph
             rect = fitz.Rect(x, y, x + w, y + h)
             sig_type = sig.get("type", "unterschrift")
-            # Sanity check: not too small, not the entire page
-            if rect.width > 5 and rect.height > 3 and rect.width < pw * 0.9:
+            # Sanity check: not the entire page; allow very small marks (paraphs)
+            if rect.width > 3 and rect.height > 2 and rect.width < pw * 0.95:
                 results.append((rect, sig_type))
         except (KeyError, TypeError):
             continue
@@ -1523,7 +1519,6 @@ def redact_pdf(
         key=len, reverse=True,
     )
 
-    logo_count = 0
     for page_idx, page in enumerate(doc):
         if progress_callback:
             progress_callback(int((page_idx / total_pages) * 100))
@@ -1560,7 +1555,7 @@ def redact_pdf(
 
         if not page_is_scan:
             # Redact logos / brand images / letterheads in headers/footers
-            logo_count += _redact_logo_images(page, repeating_xrefs, mode)
+            _redact_logo_images(page, repeating_xrefs, mode)
             # Redact vector drawings in header zone (letterhead graphics)
             _redact_header_zone_drawings(page)
 
@@ -1608,9 +1603,6 @@ def redact_pdf(
         # Re-draw every redacted area as an elegant filled overlay
         _draw_redaction_overlays(page, page_overlays)
 
-    # -- Append summary page --
-    _append_summary_page(doc, entity_map, mode, logo_count=logo_count)
-
     # -- Strip ALL metadata from output --
     _strip_metadata(doc)
 
@@ -1621,211 +1613,6 @@ def redact_pdf(
     doc.close()
     return output_path
 
-
-def _summary_new_page(doc, page_w, page_h, margin):
-    """Create a new summary page with header bar and return (page, y)."""
-    page = doc.new_page(width=page_w, height=page_h)
-    # Subtle header bar at top
-    bar = page.new_shape()
-    bar.draw_rect(fitz.Rect(0, 0, page_w, 3))
-    bar.finish(fill=REDACT_BG, color=REDACT_BG, width=0)
-    bar.commit()
-    return page, margin + 8
-
-
-def _summary_footer(page, page_w, page_h, margin):
-    """Draw the standard footer on a summary page."""
-    # Thin separator line
-    sep = page.new_shape()
-    sep_y = page_h - margin - 8
-    sep.draw_line(fitz.Point(margin, sep_y), fitz.Point(page_w - margin, sep_y))
-    sep.finish(color=(0.80, 0.80, 0.80), width=0.4)
-    sep.commit()
-    # Footer text
-    page.insert_text(
-        fitz.Point(margin, page_h - margin + 2),
-        "Tom's Super Simple PDF Anonymizer  \u00b7  Alle Metadaten entfernt",
-        fontname="helv", fontsize=7, color=(0.55, 0.55, 0.55),
-    )
-
-
-def _append_summary_page(
-    doc: fitz.Document,
-    entity_map: Dict[str, Tuple[str, str]],
-    mode: str = "pseudo_vars",
-    logo_count: int = 0,
-):
-    """Append an elegant summary page at the end of *doc*.
-
-    Layout adapts to the processing mode:
-      ``"anonymize"``       – category count overview with accent dots
-      ``"pseudo_vars"``     – grouped variable table with chips
-      ``"pseudo_natural"``  – grouped replacement table with chips
-    """
-    from collections import Counter, defaultdict
-
-    page_w, page_h = 595.28, 841.89
-    margin = 50
-    usable_bottom = page_h - margin - 25  # leave room for footer
-
-    page, y = _summary_new_page(doc, page_w, page_h, margin)
-
-    # ── Title ──
-    if mode == "anonymize":
-        title = "Anonymisierungs-Bericht"
-        subtitle = "\u00dcbersicht der geschwärzten Datenkategorien"
-    elif mode == "pseudo_natural":
-        title = "Pseudonymisierungs-Verzeichnis"
-        subtitle = "Zuordnung der Ersetzungen zu Kategorien"
-    else:
-        title = "Pseudonymisierungs-Verzeichnis"
-        subtitle = "Zuordnung der Variablen zu Kategorien"
-
-    page.insert_text(
-        fitz.Point(margin, y + 18), title,
-        fontname="helv", fontsize=16, color=BLACK,
-    )
-    y += 32
-    page.insert_text(
-        fitz.Point(margin, y + 10), subtitle,
-        fontname="helv", fontsize=9, color=(0.40, 0.40, 0.40),
-    )
-    y += 22
-
-    # Elegant thin rule
-    rule = page.new_shape()
-    rule.draw_line(fitz.Point(margin, y), fitz.Point(page_w - margin, y))
-    rule.finish(color=(0.75, 0.75, 0.75), width=0.5)
-    rule.commit()
-    y += 18
-
-    # Count entities and group by category
-    cat_counts: Counter = Counter()
-    cat_entries: dict = defaultdict(list)
-    for txt, (label, cat) in entity_map.items():
-        cat_counts[cat] += 1
-        if label:
-            cat_entries[cat].append((txt, label))
-
-    total = sum(cat_counts.values())
-
-    # ── Quick stats bar ──
-    stats_text = f"{total} Entitäten  \u00b7  {len(cat_counts)} Kategorien"
-    if logo_count > 0:
-        stats_text += f"  \u00b7  {logo_count} Logo(s)"
-    page.insert_text(
-        fitz.Point(margin, y + 9), stats_text,
-        fontname="helv", fontsize=8, color=(0.45, 0.45, 0.45),
-    )
-    y += 22
-
-    # ── Mode: anonymize – clean category count list ──
-    if mode == "anonymize":
-        for cat in sorted(cat_counts, key=lambda c: CATEGORY_LABELS.get(c, c)):
-            if y > usable_bottom:
-                _summary_footer(page, page_w, page_h, margin)
-                page, y = _summary_new_page(doc, page_w, page_h, margin)
-
-            cat_label = CATEGORY_LABELS.get(cat, cat)
-            count = cat_counts[cat]
-
-            # Black bullet
-            dot = page.new_shape()
-            dot.draw_circle(fitz.Point(margin + 4, y + 5), 2)
-            dot.finish(fill=BLACK, color=BLACK, width=0)
-            dot.commit()
-
-            # Category name
-            page.insert_text(
-                fitz.Point(margin + 14, y + 9), cat_label,
-                fontname="helv", fontsize=9, color=BLACK,
-            )
-            # Count (right-aligned)
-            count_str = str(count)
-            cw = fitz.get_text_length(count_str, fontname="helv", fontsize=9)
-            page.insert_text(
-                fitz.Point(page_w - margin - cw, y + 9), count_str,
-                fontname="helv", fontsize=9, color=(0.35, 0.35, 0.35),
-            )
-            # Dotted leader line
-            dots_x0 = margin + 14 + fitz.get_text_length(
-                cat_label, fontname="helv", fontsize=9) + 6
-            dots_x1 = page_w - margin - cw - 6
-            if dots_x1 > dots_x0 + 10:
-                dl = page.new_shape()
-                dl.draw_line(fitz.Point(dots_x0, y + 7),
-                             fitz.Point(dots_x1, y + 7))
-                dl.finish(color=(0.80, 0.80, 0.80), width=0.3,
-                          dashes="[2 3]")
-                dl.commit()
-
-            y += 18
-
-    # ── Mode: pseudo – grouped table with black chips ──
-    else:
-        col_chip = margin
-        is_natural = mode == "pseudo_natural"
-        col_len = page_w - margin - 40
-
-        sorted_cats = sorted(cat_entries.keys(),
-                             key=lambda c: CATEGORY_LABELS.get(c, c))
-
-        for cat in sorted_cats:
-            entries = cat_entries[cat]
-            if not entries:
-                continue
-
-            if y > usable_bottom - 30:
-                _summary_footer(page, page_w, page_h, margin)
-                page, y = _summary_new_page(doc, page_w, page_h, margin)
-
-            cat_label = CATEGORY_LABELS.get(cat, cat)
-
-            # Black bar + category title
-            ab = page.new_shape()
-            ab.draw_rect(fitz.Rect(margin, y, margin + 3, y + 12))
-            ab.finish(fill=BLACK, color=BLACK, width=0)
-            ab.commit()
-            page.insert_text(
-                fitz.Point(margin + 8, y + 9),
-                f"{cat_label}  ({len(entries)})",
-                fontname="helv", fontsize=8.5, color=BLACK,
-            )
-            y += 18
-
-            for original_text, label in sorted(entries, key=lambda e: e[1]):
-                if y > usable_bottom:
-                    _summary_footer(page, page_w, page_h, margin)
-                    page, y = _summary_new_page(doc, page_w, page_h, margin)
-
-                # Black chip
-                disp = label if len(label) <= 30 else label[:27] + "\u2026"
-                chip_w = fitz.get_text_length(
-                    disp, fontname="helv", fontsize=8) + 8
-                chip_h = 12
-                chip_rect = fitz.Rect(
-                    col_chip + 6, y, col_chip + 6 + chip_w, y + chip_h)
-                cs = page.new_shape()
-                _draw_rounded_rect(cs, chip_rect, radius=2.0)
-                cs.finish(color=BLACK, fill=BLACK, width=0)
-                cs.commit()
-                page.insert_text(
-                    fitz.Point(chip_rect.x0 + 4, y + 8.5), disp,
-                    fontname="helv", fontsize=8, color=WHITE,
-                )
-
-                # Length hint
-                hint = f"{len(original_text)} Zeichen"
-                page.insert_text(
-                    fitz.Point(col_len, y + 8.5), hint,
-                    fontname="helv", fontsize=7, color=(0.50, 0.50, 0.50),
-                )
-                y += 16
-
-            y += 6
-
-    # ── Footer ──
-    _summary_footer(page, page_w, page_h, margin)
 
 
 def get_page_count(pdf_path: str) -> int:
