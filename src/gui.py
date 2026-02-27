@@ -39,6 +39,9 @@ from PyQt6.QtCore import (
     QSize,
     QSettings,
     QTimer,
+    QPropertyAnimation,
+    QEasingCurve,
+    pyqtProperty,
 )
 from PyQt6.QtGui import (
     QDragEnterEvent,
@@ -48,6 +51,7 @@ from PyQt6.QtGui import (
     QColor,
     QMouseEvent,
 )
+from PyQt6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsOpacityEffect
 
 try:
     from ai_engine import (
@@ -140,27 +144,33 @@ def load_scope() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Colour palette – soft blue-teal tones with black accents
+# Colour palette – refined blue tones, clear status colours
 # ---------------------------------------------------------------------------
 
-BG_DARK         = "#EAF0F8"         # soft blue-grey background
-BG_CARD         = "#F2F6FC"         # slightly lighter card surface
-BG_SURFACE      = "#DDE8F4"         # subtle blue for inputs/bars
-BG_HOVER        = "#CFDFEF"         # hover highlight
+BG_DARK         = "#EEF2F9"         # soft lavender-grey background
+BG_CARD         = "#F7F9FC"         # almost-white card surface
+BG_SURFACE      = "#E2E9F3"         # subtle blue for inputs/bars
+BG_HOVER        = "#D4DEEE"         # hover highlight
 
 ACCENT          = "#2563EB"         # vivid blue primary
 ACCENT_HOVER    = "#1D4ED8"         # deeper blue on hover
-ACCENT_SOFT     = "#5B8BD6"         # muted blue for secondary
+ACCENT_SOFT     = "#6B9AE8"         # lighter muted blue for secondary
+ACCENT_GLOW     = "#93B5F5"         # very light blue for glows/shadows
 
-BORDER          = "#BDD0E8"         # blue-grey border
+BORDER          = "#C8D6EA"         # softer blue-grey border
 BORDER_FOCUS    = "#3B7DD8"         # strong blue on focus
 
 TEXT_PRIMARY    = "#0F172A"         # near-black with blue tint
 TEXT_SECONDARY  = "#475569"         # slate secondary
 TEXT_MUTED      = "#94A3B8"         # slate muted
 
-SUCCESS         = "#1E40AF"         # deep blue for success
+SUCCESS         = "#16A34A"         # clear green for success
+SUCCESS_BG      = "#F0FDF4"         # very light green tint
+SUCCESS_BORDER  = "#86EFAC"         # soft green border
+
 ERROR           = "#DC2626"         # red for errors
+ERROR_BG        = "#FEF2F2"         # very light red tint
+ERROR_BORDER    = "#FCA5A5"         # soft red border
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +180,7 @@ ERROR           = "#DC2626"         # red for errors
 STYLESHEET = f"""
 /* ── Global ────────────────────────────────────────────── */
 * {{
-    font-family: "SF Pro Display", "Helvetica Neue", "Arial", sans-serif;
+    font-family: "SF Pro Display", "Segoe UI", "Helvetica Neue", "Arial", sans-serif;
     font-weight: normal;
 }}
 QMainWindow {{
@@ -188,21 +198,21 @@ QLabel {{
 /* ── Typography ────────────────────────────────────────── */
 QLabel#titleLabel {{
     color: {TEXT_PRIMARY};
-    font-size: 23px;
-    letter-spacing: -0.4px;
+    font-size: 22px;
+    letter-spacing: -0.3px;
 }}
 QLabel#titleAccent {{
-    color: {TEXT_PRIMARY};
-    font-size: 23px;
-    letter-spacing: -0.4px;
+    color: {ACCENT};
+    font-size: 22px;
+    letter-spacing: -0.3px;
 }}
 QLabel#subtitleLabel {{
-    color: {TEXT_SECONDARY};
+    color: {TEXT_MUTED};
     font-size: 12px;
     line-height: 1.6;
 }}
 QLabel#dropIcon {{
-    font-size: 52px;
+    font-size: 48px;
     background: transparent;
 }}
 QLabel#dropLabel {{
@@ -214,8 +224,8 @@ QLabel#dropHint {{
     font-size: 12px;
 }}
 QLabel#fileLabel {{
-    color: {TEXT_PRIMARY};
-    font-size: 13px;
+    color: {TEXT_SECONDARY};
+    font-size: 12px;
     padding: 4px 0px;
 }}
 QLabel#statusLabel {{
@@ -223,15 +233,15 @@ QLabel#statusLabel {{
     font-size: 12px;
 }}
 QLabel#stepLabel {{
-    color: {TEXT_PRIMARY};
+    color: {ACCENT};
     font-size: 12px;
 }}
 QLabel#providerPill {{
-    color: {TEXT_PRIMARY};
-    background-color: {BG_SURFACE};
-    border: 1px solid {BORDER};
-    border-radius: 16px;
-    padding: 5px 14px;
+    color: {ACCENT};
+    background-color: {BG_CARD};
+    border: 1px solid {ACCENT_GLOW};
+    border-radius: 14px;
+    padding: 4px 12px;
     font-size: 11px;
 }}
 QLabel#successLabel {{
@@ -242,13 +252,18 @@ QLabel#errorLabel {{
     color: {ERROR};
     font-size: 13px;
 }}
+QLabel#versionLabel {{
+    color: {TEXT_MUTED};
+    font-size: 10px;
+    background: transparent;
+}}
 
 /* ── Buttons ───────────────────────────────────────────── */
 QPushButton {{
     background-color: {ACCENT};
     color: #FFFFFF;
     border: none;
-    border-radius: 18px;
+    border-radius: 16px;
     padding: 10px 28px;
     font-size: 13px;
 }}
@@ -261,26 +276,26 @@ QPushButton:pressed {{
 QPushButton:disabled {{
     background-color: {BG_SURFACE};
     color: {TEXT_MUTED};
-    border-radius: 18px;
+    border-radius: 16px;
 }}
 QPushButton#settingsBtn {{
-    background-color: {BG_SURFACE};
-    color: {TEXT_SECONDARY};
+    background-color: transparent;
+    color: {TEXT_MUTED};
     border: 1px solid {BORDER};
-    border-radius: 16px;
-    padding: 7px 18px;
-    font-size: 12px;
+    border-radius: 14px;
+    padding: 6px 16px;
+    font-size: 11px;
 }}
 QPushButton#settingsBtn:hover {{
-    color: {TEXT_PRIMARY};
-    background-color: {BG_HOVER};
-    border-color: {ACCENT_SOFT};
+    color: {ACCENT};
+    background-color: {BG_CARD};
+    border-color: {ACCENT_GLOW};
 }}
 QPushButton#selectBtn {{
-    background-color: {BG_SURFACE};
+    background-color: {BG_CARD};
     color: {TEXT_PRIMARY};
     border: 1px solid {BORDER};
-    border-radius: 18px;
+    border-radius: 16px;
     padding: 9px 22px;
     font-size: 13px;
 }}
@@ -294,32 +309,33 @@ QPushButton#selectBtn:disabled {{
     background-color: {BG_SURFACE};
 }}
 QPushButton#openFolderBtn {{
-    background-color: {BG_SURFACE};
-    color: {TEXT_PRIMARY};
-    border: 1px solid {BORDER};
-    border-radius: 16px;
-    padding: 7px 18px;
+    background-color: {SUCCESS_BG};
+    color: {SUCCESS};
+    border: 1px solid {SUCCESS_BORDER};
+    border-radius: 14px;
+    padding: 6px 16px;
     font-size: 12px;
 }}
 QPushButton#openFolderBtn:hover {{
-    background-color: {BG_HOVER};
-    border-color: {ACCENT_SOFT};
+    background-color: #DCFCE7;
+    border-color: {SUCCESS};
 }}
 
 /* ── Progress ──────────────────────────────────────────── */
 QProgressBar {{
     border: none;
-    border-radius: 12px;
+    border-radius: 10px;
     text-align: center;
     color: #FFFFFF;
     background-color: {BG_SURFACE};
-    min-height: 24px;
-    max-height: 24px;
-    font-size: 11px;
+    min-height: 20px;
+    max-height: 20px;
+    font-size: 10px;
 }}
 QProgressBar::chunk {{
-    background-color: {ACCENT};
-    border-radius: 12px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {ACCENT}, stop:0.5 {ACCENT_SOFT}, stop:1 {ACCENT});
+    border-radius: 10px;
 }}
 
 /* ── Inputs ────────────────────────────────────────────── */
@@ -327,7 +343,7 @@ QComboBox {{
     background-color: {BG_CARD};
     color: {TEXT_PRIMARY};
     border: 1px solid {BORDER};
-    border-radius: 14px;
+    border-radius: 12px;
     padding: 10px 14px;
     font-size: 13px;
 }}
@@ -339,7 +355,7 @@ QComboBox QAbstractItemView {{
     color: {TEXT_PRIMARY};
     selection-background-color: {BG_SURFACE};
     border: 1px solid {BORDER};
-    border-radius: 12px;
+    border-radius: 10px;
     outline: none;
     padding: 4px;
 }}
@@ -348,35 +364,37 @@ QComboBox::drop-down {{
     padding-right: 10px;
 }}
 QLineEdit {{
-    background-color: {BG_CARD};
+    background-color: #FFFFFF;
     color: {TEXT_PRIMARY};
     border: 1px solid {BORDER};
-    border-radius: 14px;
+    border-radius: 12px;
     padding: 10px 14px;
     font-size: 13px;
     selection-background-color: {BG_HOVER};
 }}
 QLineEdit:focus {{
-    border-color: {BORDER_FOCUS};
+    border-color: {ACCENT};
 }}
 QLineEdit[valid="true"] {{
-    border-color: {ACCENT};
+    border-color: {SUCCESS};
 }}
 
 /* ── Groups ────────────────────────────────────────────── */
 QGroupBox {{
     color: {TEXT_PRIMARY};
     border: 1px solid {BORDER};
-    border-radius: 20px;
+    border-radius: 16px;
     margin-top: 14px;
     padding: 22px 18px 14px 18px;
     font-size: 13px;
+    background-color: {BG_CARD};
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
     left: 18px;
     padding: 0 10px;
-    color: {TEXT_PRIMARY};
+    color: {TEXT_SECONDARY};
+    font-size: 12px;
 }}
 
 /* ── Dialog ────────────────────────────────────────────── */
@@ -388,51 +406,52 @@ QDialog {{
 QStatusBar {{
     background-color: {BG_CARD};
     color: {TEXT_MUTED};
-    font-size: 11px;
+    font-size: 10px;
     border-top: 1px solid {BORDER};
-    padding: 4px 12px;
+    padding: 3px 12px;
 }}
 
 /* ── Drop zone ─────────────────────────────────────────── */
 QFrame#dropZone {{
     background-color: {BG_CARD};
     border: 2px dashed {BORDER};
-    border-radius: 28px;
+    border-radius: 24px;
 }}
 QFrame#dropZone:hover {{
     border-color: {ACCENT_SOFT};
-    background-color: {BG_SURFACE};
+    background-color: #FFFFFF;
 }}
 QFrame#dropZone[dragOver="true"] {{
     border-color: {ACCENT};
     border-style: solid;
-    background-color: {BG_SURFACE};
+    border-width: 2px;
+    background-color: #EBF4FF;
 }}
 QFrame#dropZone[processing="true"] {{
-    border-color: {ACCENT_SOFT};
+    border-color: {ACCENT_GLOW};
     border-style: solid;
     background-color: {BG_CARD};
 }}
 QFrame#dropZone[success="true"] {{
-    border-color: {ACCENT_SOFT};
+    border-color: {SUCCESS_BORDER};
     border-style: solid;
-    background-color: {BG_CARD};
+    background-color: {SUCCESS_BG};
 }}
 QFrame#dropZone[error="true"] {{
-    border-color: {ERROR};
+    border-color: {ERROR_BORDER};
     border-style: solid;
-    background-color: {BG_CARD};
+    background-color: {ERROR_BG};
 }}
 
 /* ── Scrollbar (macOS-style) ──────────────────────────── */
 QScrollBar:vertical {{
     background-color: transparent;
-    width: 8px;
+    width: 6px;
     margin: 4px 2px;
 }}
 QScrollBar::handle:vertical {{
     background-color: {BG_HOVER};
-    border-radius: 4px;
+    border-radius: 3px;
     min-height: 30px;
 }}
 QScrollBar::handle:vertical:hover {{
@@ -440,6 +459,16 @@ QScrollBar::handle:vertical:hover {{
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
+}}
+
+/* ── Tooltip ──────────────────────────────────────────── */
+QToolTip {{
+    background-color: {TEXT_PRIMARY};
+    color: #FFFFFF;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 11px;
 }}
 """
 
@@ -465,14 +494,22 @@ class DropZone(QFrame):
         super().__init__(parent)
         self.setObjectName("dropZone")
         self.setAcceptDrops(True)
-        self.setMinimumHeight(240)
+        self.setMinimumHeight(220)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._state = self.STATE_IDLE
 
+        # Drop shadow for depth
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(32)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 22))
+        self.setGraphicsEffect(shadow)
+        self._shadow = shadow
+
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(6)
+        layout.setSpacing(8)
 
         # Icon
         self.icon_label = QLabel()
@@ -503,11 +540,19 @@ class DropZone(QFrame):
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
-        self.progress_bar.setFixedHeight(22)
-        self.progress_bar.setMinimumWidth(360)
-        self.progress_bar.setMaximumWidth(420)
+        self.progress_bar.setFixedHeight(20)
+        self.progress_bar.setMinimumWidth(320)
+        self.progress_bar.setMaximumWidth(400)
         self.progress_bar.setFormat("%p %")
         layout.addWidget(self.progress_bar, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Idle pulse animation for the shadow
+        self._pulse_anim = QPropertyAnimation(shadow, b"blurRadius")
+        self._pulse_anim.setDuration(2400)
+        self._pulse_anim.setStartValue(24)
+        self._pulse_anim.setEndValue(40)
+        self._pulse_anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._pulse_anim.setLoopCount(-1)  # infinite
 
         self.set_state(self.STATE_IDLE)
 
@@ -517,32 +562,42 @@ class DropZone(QFrame):
         for prop in ("dragOver", "processing", "success", "error"):
             self.setProperty(prop, False)
 
+        # Stop pulse animation by default
+        self._pulse_anim.stop()
+
         if state == self.STATE_IDLE:
-            self.icon_label.setText("\U0001F4C4")  # document emoji
+            self.icon_label.setText("\u2B06")  # upward arrow
             self.primary_label.setText("Datei hier ablegen")
-            self.secondary_label.setText("PDF, Word, JPG – oder klicken zum Auswählen")
+            self.secondary_label.setText("PDF, Word, JPG \u2013 oder klicken zum Ausw\u00e4hlen")
             self.secondary_label.setVisible(True)
             self.step_label.setVisible(False)
             self.progress_bar.setVisible(False)
             self.setCursor(Qt.CursorShape.PointingHandCursor)
             self.setAcceptDrops(True)
+            # Subtle shadow pulse on idle
+            self._shadow.setColor(QColor(37, 99, 235, 18))  # ACCENT with low alpha
+            self._pulse_anim.start()
 
         elif state == self.STATE_PROCESSING:
             self.setProperty("processing", True)
-            self.icon_label.setText("\U0001F50D")  # magnifying glass
-            self.primary_label.setText("Wird verarbeitet …")
+            self._shadow.setColor(QColor(37, 99, 235, 30))
+            self._shadow.setBlurRadius(28)
+            self.icon_label.setText("\u2699")  # gear
+            self.primary_label.setText("Wird verarbeitet \u2026")
             self.secondary_label.setVisible(False)
             self.step_label.setVisible(True)
-            self.step_label.setText(detail or "Initialisiere …")
+            self.step_label.setText(detail or "Initialisiere \u2026")
             self.progress_bar.setVisible(True)
             self.setCursor(Qt.CursorShape.WaitCursor)
             self.setAcceptDrops(False)
 
         elif state == self.STATE_SUCCESS:
             self.setProperty("success", True)
-            self.icon_label.setText("\u2705")  # check mark
+            self._shadow.setColor(QColor(22, 163, 74, 30))  # green shadow
+            self._shadow.setBlurRadius(32)
+            self.icon_label.setText("\u2713")  # check mark (simple)
             self.primary_label.setText("Anonymisierung abgeschlossen")
-            self.primary_label.setStyleSheet(f"color: {SUCCESS};")
+            self.primary_label.setStyleSheet(f"color: {SUCCESS}; font-size: 15px;")
             self.secondary_label.setText(detail or "")
             self.secondary_label.setVisible(bool(detail))
             self.step_label.setVisible(False)
@@ -552,9 +607,11 @@ class DropZone(QFrame):
 
         elif state == self.STATE_ERROR:
             self.setProperty("error", True)
-            self.icon_label.setText("\u274C")  # cross mark
+            self._shadow.setColor(QColor(220, 38, 38, 25))  # red shadow
+            self._shadow.setBlurRadius(28)
+            self.icon_label.setText("\u2717")  # ballot X
             self.primary_label.setText("Fehler aufgetreten")
-            self.primary_label.setStyleSheet(f"color: {ERROR};")
+            self.primary_label.setStyleSheet(f"color: {ERROR}; font-size: 15px;")
             self.secondary_label.setText("Klicken oder neue Datei ablegen, um es erneut zu versuchen")
             self.secondary_label.setVisible(True)
             self.step_label.setVisible(False)
@@ -566,9 +623,9 @@ class DropZone(QFrame):
         if state != self.STATE_PROCESSING:
             self.primary_label.setStyleSheet("")  # reset inline override
         if state == self.STATE_SUCCESS:
-            self.primary_label.setStyleSheet(f"color: {SUCCESS};")
+            self.primary_label.setStyleSheet(f"color: {SUCCESS}; font-size: 15px;")
         elif state == self.STATE_ERROR:
-            self.primary_label.setStyleSheet(f"color: {ERROR};")
+            self.primary_label.setStyleSheet(f"color: {ERROR}; font-size: 15px;")
 
         self.style().unpolish(self)
         self.style().polish(self)
@@ -759,47 +816,47 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Einstellungen")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(480)
         self.setStyleSheet(STYLESHEET)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(18)
-        layout.setContentsMargins(32, 32, 32, 28)
+        layout.setSpacing(16)
+        layout.setContentsMargins(32, 28, 32, 24)
 
         # -- Header --
-        header = QLabel("Einstellungen")
-        header.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 20px; letter-spacing: -0.3px;")
+        header = QLabel("\u2699  Einstellungen")
+        header.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 18px; letter-spacing: -0.3px;")
         layout.addWidget(header)
-        desc = QLabel("Hinterlegen Sie Ihren OpenAI API-Key. Es wird GPT-5.2 verwendet.")
+        desc = QLabel("Hinterlegen Sie Ihren OpenAI API-Key f\u00fcr die KI-Analyse.")
         desc.setWordWrap(True)
-        desc.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px;")
+        desc.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
         layout.addWidget(desc)
 
-        layout.addSpacing(4)
+        layout.addSpacing(8)
 
-        # -- Model info --
-        model_label = QLabel("Modell:  GPT-5.2")
+        # -- Model info pill --
+        model_label = QLabel("\u2728  Modell: GPT-5.2")
         model_label.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 13px; "
-            f"background-color: {BG_SURFACE}; "
-            f"border: 1px solid {BORDER}; "
-            f"border-radius: 12px; padding: 10px 16px;"
+            f"color: {ACCENT}; font-size: 12px; "
+            f"background-color: #EBF4FF; "
+            f"border: 1px solid {ACCENT_GLOW}; "
+            f"border-radius: 10px; padding: 8px 14px;"
         )
         layout.addWidget(model_label)
 
         layout.addSpacing(4)
 
         # -- API key --
-        keys_group = QGroupBox("OpenAI API-Key")
+        keys_group = QGroupBox("API-Key")
         keys_layout = QFormLayout(keys_group)
         keys_layout.setSpacing(10)
 
         self.key_field = QLineEdit(load_api_key("openai"))
         self.key_field.setPlaceholderText("sk-...")
         self.key_field.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key_field.setMinimumHeight(36)
+        self.key_field.setMinimumHeight(38)
         self.key_field.textChanged.connect(self._on_key_changed)
-        keys_layout.addRow("API-Key:", self.key_field)
+        keys_layout.addRow("OpenAI:", self.key_field)
 
         layout.addWidget(keys_group)
         layout.addStretch()
@@ -814,8 +871,8 @@ class SettingsDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
-        save_btn = QPushButton("Speichern")
-        save_btn.setMinimumWidth(120)
+        save_btn = QPushButton("\u2713  Speichern")
+        save_btn.setMinimumWidth(130)
         save_btn.clicked.connect(self.save_and_close)
         btn_layout.addWidget(save_btn)
 
@@ -897,16 +954,16 @@ class _ChipGroup(QFrame):
             if key == self._selected:
                 chip.setStyleSheet(
                     f"QPushButton {{ background-color: {ACCENT}; color: #FFFFFF; "
-                    f"border: none; border-radius: 16px; padding: 6px 18px; "
+                    f"border: none; border-radius: 14px; padding: 6px 18px; "
                     f"font-size: 12px; }}"
                 )
             else:
                 chip.setStyleSheet(
-                    f"QPushButton {{ background-color: {BG_CARD}; color: {TEXT_SECONDARY}; "
-                    f"border: 1px solid {BORDER}; border-radius: 16px; padding: 6px 18px; "
+                    f"QPushButton {{ background-color: #FFFFFF; color: {TEXT_SECONDARY}; "
+                    f"border: 1px solid {BORDER}; border-radius: 14px; padding: 6px 18px; "
                     f"font-size: 12px; }}"
-                    f"QPushButton:hover {{ background-color: {BG_HOVER}; "
-                    f"border-color: {ACCENT_SOFT}; color: {TEXT_PRIMARY}; }}"
+                    f"QPushButton:hover {{ background-color: #EBF4FF; "
+                    f"border-color: {ACCENT_SOFT}; color: {ACCENT}; }}"
                 )
 
     @property
@@ -932,10 +989,10 @@ class ModeSelectionDialog(QDialog):
         # Header
         header = QLabel("Verarbeitungsoptionen")
         header.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-size: 18px; letter-spacing: -0.3px;"
+            f"color: {TEXT_PRIMARY}; font-size: 17px; letter-spacing: -0.2px;"
         )
         layout.addWidget(header)
-        layout.addSpacing(2)
+        layout.addSpacing(4)
 
         # -- Scope section --
         scope_label = QLabel("Umfang")
@@ -972,42 +1029,72 @@ class ModeSelectionDialog(QDialog):
 
         saved_mode = load_mode()
 
+        # Mode icons
+        mode_icons = {
+            MODE_ANONYMIZE: "\u2588\u2588",  # solid blocks = redaction
+            MODE_PSEUDO_NATURAL: "\u21C4",    # arrows = replacement
+        }
+
         for mode_key, title, desc in _MODE_OPTIONS:
             is_saved = mode_key == saved_mode
             card = QFrame()
             card.setCursor(Qt.CursorShape.PointingHandCursor)
             border_col = ACCENT if is_saved else BORDER
+            bg_col = "#EBF4FF" if is_saved else BG_CARD
             card.setStyleSheet(f"""
                 QFrame {{
-                    background-color: {BG_CARD};
+                    background-color: {bg_col};
                     border: {"2" if is_saved else "1"}px solid {border_col};
-                    border-radius: 16px;
+                    border-radius: 14px;
                     padding: 14px 18px;
                 }}
                 QFrame:hover {{
-                    border-color: {ACCENT_SOFT};
-                    background-color: {BG_SURFACE};
+                    border-color: {ACCENT};
+                    background-color: #EBF4FF;
                 }}
             """)
 
-            card_layout = QVBoxLayout(card)
-            card_layout.setSpacing(3)
+            # Add shadow to card
+            card_shadow = QGraphicsDropShadowEffect(card)
+            card_shadow.setBlurRadius(16)
+            card_shadow.setOffset(0, 2)
+            card_shadow.setColor(QColor(0, 0, 0, 15))
+            card.setGraphicsEffect(card_shadow)
+
+            card_layout = QHBoxLayout(card)
+            card_layout.setSpacing(14)
             card_layout.setContentsMargins(0, 0, 0, 0)
+
+            # Icon on the left
+            icon = QLabel(mode_icons.get(mode_key, ""))
+            icon.setStyleSheet(
+                f"color: {ACCENT}; font-size: 18px; "
+                f"border: none; background: transparent;"
+            )
+            icon.setFixedWidth(30)
+            icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            card_layout.addWidget(icon)
+
+            # Text on the right
+            text_layout = QVBoxLayout()
+            text_layout.setSpacing(2)
 
             title_label = QLabel(title)
             title_label.setStyleSheet(
                 f"color: {TEXT_PRIMARY}; font-size: 13px; "
                 f"border: none; background: transparent;"
             )
-            card_layout.addWidget(title_label)
+            text_layout.addWidget(title_label)
 
             desc_label = QLabel(desc)
             desc_label.setStyleSheet(
-                f"color: {TEXT_SECONDARY}; font-size: 11px; "
+                f"color: {TEXT_MUTED}; font-size: 11px; "
                 f"border: none; background: transparent;"
             )
             desc_label.setWordWrap(True)
-            card_layout.addWidget(desc_label)
+            text_layout.addWidget(desc_label)
+
+            card_layout.addLayout(text_layout, stretch=1)
 
             card.mousePressEvent = lambda event, m=mode_key: self._select(m)
             layout.addWidget(card)
@@ -1041,8 +1128,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Tom's Super Simple PDF Anonymizer")
-        self.setMinimumSize(640, 560)
-        self.resize(720, 620)
+        self.setMinimumSize(620, 520)
+        self.resize(700, 600)
         self.setStyleSheet(STYLESHEET)
 
         self.worker = None
@@ -1065,7 +1152,7 @@ class MainWindow(QMainWindow):
 
         title_layout = QHBoxLayout()
         title_layout.setSpacing(0)
-        t1 = QLabel("Tom's Super Simple ")
+        t1 = QLabel("Tom\u2019s Super Simple ")
         t1.setObjectName("titleLabel")
         title_layout.addWidget(t1)
         t2 = QLabel("PDF Anonymizer")
@@ -1080,25 +1167,25 @@ class MainWindow(QMainWindow):
         self._update_provider_pill()
         header.addWidget(self.provider_pill, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        header.addSpacing(8)
+        header.addSpacing(6)
 
-        settings_btn = QPushButton("Einstellungen")
+        settings_btn = QPushButton("\u2699  Einstellungen")
         settings_btn.setObjectName("settingsBtn")
         settings_btn.clicked.connect(self.open_settings)
         header.addWidget(settings_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         main_layout.addLayout(header)
-        main_layout.addSpacing(4)
+        main_layout.addSpacing(2)
 
         # Subtitle
         subtitle = QLabel(
-            "Automatische KI-gestützte Anonymisierung personenbezogener Daten.  "
-            "Unterstützt: PDF, Word (DOCX), JPG – OCR wird bei Bedarf automatisch durchgeführt."
+            "KI-gest\u00fctzte Anonymisierung personenbezogener Daten  \u00b7  "
+            "PDF, Word, JPG  \u00b7  OCR bei Bedarf"
         )
         subtitle.setObjectName("subtitleLabel")
         subtitle.setWordWrap(True)
         main_layout.addWidget(subtitle)
-        main_layout.addSpacing(16)
+        main_layout.addSpacing(14)
 
         # ── Drop zone ──
         self.drop_zone = DropZone()
@@ -1111,27 +1198,27 @@ class MainWindow(QMainWindow):
         bottom = QHBoxLayout()
         bottom.setSpacing(10)
 
-        self.file_label = QLabel("Keine Datei ausgewählt")
+        self.file_label = QLabel("")
         self.file_label.setObjectName("fileLabel")
         self.file_label.setWordWrap(True)
         bottom.addWidget(self.file_label, stretch=1)
 
-        self.open_folder_btn = QPushButton("Ordner öffnen")
+        self.open_folder_btn = QPushButton("\u2197  Ordner \u00f6ffnen")
         self.open_folder_btn.setObjectName("openFolderBtn")
         self.open_folder_btn.setVisible(False)
         self.open_folder_btn.clicked.connect(self._open_output_folder)
         bottom.addWidget(self.open_folder_btn)
 
-        self.select_btn = QPushButton("Datei auswählen")
+        self.select_btn = QPushButton("Datei ausw\u00e4hlen")
         self.select_btn.setObjectName("selectBtn")
         self.select_btn.clicked.connect(self.browse_pdf)
         bottom.addWidget(self.select_btn)
 
         main_layout.addLayout(bottom)
-        main_layout.addSpacing(4)
+        main_layout.addSpacing(2)
 
         # ── Status bar ──
-        self.statusBar().showMessage("Bereit")
+        self.statusBar().showMessage("Bereit  \u00b7  v2.0")
         self._update_statusbar_idle()
 
     # -- Helpers --
@@ -1140,23 +1227,22 @@ class MainWindow(QMainWindow):
         has_key = bool(load_api_key("openai"))
         if has_key:
             self.provider_pill.setText("GPT-5.2")
+            self.provider_pill.setStyleSheet("")  # reset to default from stylesheet
         else:
-            self.provider_pill.setText("GPT-5.2  (kein Key)")
+            self.provider_pill.setText("GPT-5.2  \u00b7  kein Key")
             self.provider_pill.setStyleSheet(
-                f"color: {TEXT_MUTED}; background-color: {BG_SURFACE}; "
-                f"border: 1px solid {BORDER}; "
-                f"border-radius: 14px; padding: 5px 14px; font-size: 11px;"
+                f"color: {ERROR}; background-color: {ERROR_BG}; "
+                f"border: 1px solid {ERROR_BORDER}; "
+                f"border-radius: 14px; padding: 4px 12px; font-size: 11px;"
             )
-            return
-        self.provider_pill.setStyleSheet("")  # reset to default from stylesheet
 
     def _update_statusbar_idle(self):
         prov = load_provider()
         has_key = bool(load_api_key(prov))
         if has_key:
-            self.statusBar().showMessage("Bereit  –  PDF ablegen oder auswählen")
+            self.statusBar().showMessage("Bereit  \u00b7  PDF ablegen oder ausw\u00e4hlen  \u00b7  v2.0")
         else:
-            self.statusBar().showMessage("Bitte zuerst einen API-Key in den Einstellungen hinterlegen")
+            self.statusBar().showMessage("Bitte zuerst einen API-Key in den Einstellungen hinterlegen  \u00b7  v2.0")
 
     def _current_mode(self) -> str:
         return self._selected_mode
